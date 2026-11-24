@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.ubuntu-window-spawner"
+          path="/org/gnome/shell/extensions/ubuntu-window-spawner/">
+    <key name="remember-windows" type="b">
+      <default>true</default>
+      <summary>Remember window size and position</summary>
+    </key>
+    <key name="dialog-monitor" type="s">
+      <default>'primary'</default>
+      <summary>Where dialogs open</summary>
+      <description>Use primary for the main display, system for Ubuntu's choice, or the connector of a specific display.</description>
+    </key>
+    <key name="excluded-apps" type="as">
+      <default>[]</default>
+      <summary>Apps with window memory turned off</summary>
+    </key>
+  </schema>
+</schemalist>
