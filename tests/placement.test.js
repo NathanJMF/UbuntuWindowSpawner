@@ -51,7 +51,8 @@ if (ARGV[0] !== '--state-test') {
     }
     print('Placement geometry and per-app state passed.');
 } else {
-    const {forgetSavedApp, listSavedApps, readPlacement, writePlacement} = await import('../state.js');
+    const {forgetSavedApp, listSavedApps, placementForLayout, savedAppState, writePlacement} = await import('../state.js');
+    const readPlacement = (id, layout) => placementForLayout(savedAppState(id), layout);
     const id = 'example/../Editor.desktop'; // IDs cannot escape the state directory.
     const external = {connector: 'DP-1', maximized: 0, frame: relative};
     const internal = {connector: 'eDP-1', maximized: 3, frame: right};
@@ -68,4 +69,10 @@ if (ARGV[0] !== '--state-test') {
     forgetSavedApp(id);
     equal(listSavedApps(), ['Viewer.desktop']);
     equal(readPlacement(id, soloKey), null);
+    writePlacement(id, dockKey, external); // A pending write from before Forget.
+    equal(readPlacement(id, dockKey), null);
+    const generation = savedAppState(id).generation;
+    writePlacement(id, soloKey, internal, generation); // A newly opened window.
+    writePlacement(id, soloKey, external); // An older window remains open.
+    equal(readPlacement(id, soloKey), internal);
 }

@@ -5,32 +5,30 @@ import {validFrame} from './geometry.js';
 
 const directory = GLib.build_filenamev([GLib.get_user_state_dir(), 'ubuntu-window-spawner']);
 
-function fileName(appId) {
+function appFile(appId) {
     const digest = GLib.compute_checksum_for_string(GLib.ChecksumType.SHA256, appId, -1);
-    return GLib.build_filenamev([directory, `${digest}.json`]);
+    return Gio.File.new_for_path(GLib.build_filenamev([directory, `${digest}.json`]));
 }
 
-function readFile(path) {
-    const file = Gio.File.new_for_path(path);
+function readFile(file) {
     try {
-        const [, bytes] = file.load_contents(null);
-        const state = JSON.parse(new TextDecoder().decode(bytes));
-        if (state?.version === 1 && typeof state.appId === 'string' &&
-            state.layouts && typeof state.layouts === 'object' && !Array.isArray(state.layouts))
-            return state;
+        const [, bytes, etag] = file.load_contents(null);
+        const data = JSON.parse(new TextDecoder().decode(bytes));
+        if (data?.version === 1)
+            return {data, etag};
     } catch (error) {
         if (!error.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.NOT_FOUND))
             console.warn('Window Spawner could not read a saved placement.');
     }
-    return null;
+    return {data: {}, etag: null};
 }
 
-export function readPlacement(appId, layout) {
-    const data = readFile(fileName(appId));
-    if (data?.appId !== appId)
-        return null;
+export function savedAppState(appId) {
+    return readFile(appFile(appId)).data;
+}
 
-    const record = data.layouts[layout] ?? data.layouts[data.latestLayout];
+export function placementForLayout(data, layout) {
+    const record = data.layouts?.[layout] ?? data.layouts?.[data.latestLayout];
     if (!record || typeof record.connector !== 'string' ||
         !Number.isInteger(record.maximized) || record.maximized < 0 || record.maximized > 3 ||
         (record.frame !== null && !validFrame(record.frame)))
@@ -38,19 +36,33 @@ export function readPlacement(appId, layout) {
     return record;
 }
 
-export function writePlacement(appId, layout, record) {
-    const path = fileName(appId);
-    const data = readFile(path) ?? {version: 1, appId, layouts: {}};
-    if (layout === data.latestLayout &&
-        JSON.stringify(data.layouts[layout]) === JSON.stringify(record))
-        return;
-
-    data.latestLayout = layout;
-    data.layouts[layout] = record;
+function replace(file, data, etag) {
     if (GLib.mkdir_with_parents(directory, 0o700) !== 0)
         throw new Error('Could not create the window placement directory.');
-    GLib.file_set_contents_full(path, JSON.stringify(data),
-        GLib.FileSetContentsFlags.CONSISTENT, 0o600);
+    file.replace_contents(JSON.stringify(data), etag, false, Gio.FileCreateFlags.PRIVATE, null);
+}
+
+export function writePlacement(appId, layout, record, generation) {
+    const file = appFile(appId);
+    const {data, etag} = readFile(file);
+    // Open windows retain their generation. Forgetting an app invalidates its
+    // delayed writes too, even if another window has since started recording.
+    if (data.generation !== generation)
+        return;
+    if (layout === data.latestLayout && JSON.stringify(data.layouts?.[layout]) === JSON.stringify(record))
+        return;
+
+    data.version = 1;
+    data.appId = appId;
+    data.latestLayout = layout;
+    data.layouts ??= {};
+    data.layouts[layout] = record;
+    try {
+        replace(file, data, etag);
+    } catch (error) {
+        if (!error.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.WRONG_ETAG))
+            throw error;
+    }
 }
 
 export function listSavedApps() {
@@ -71,8 +83,8 @@ export function listSavedApps() {
             const name = file.get_name();
             if (file.get_file_type() !== Gio.FileType.REGULAR || !/^[a-f0-9]{64}\.json$/.test(name))
                 continue;
-            const data = readFile(dir.get_child(name).get_path());
-            if (data?.appId)
+            const {data} = readFile(dir.get_child(name));
+            if (typeof data.appId === 'string')
                 apps.push(data.appId);
         }
     } finally {
@@ -82,10 +94,7 @@ export function listSavedApps() {
 }
 
 export function forgetSavedApp(appId) {
-    try {
-        Gio.File.new_for_path(fileName(appId)).delete(null);
-    } catch (error) {
-        if (!error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.NOT_FOUND))
-            throw error;
-    }
+    // Only a nonce remains so existing windows can recognize the reset. The
+    // next launch can learn a placement immediately, including for the same ID.
+    replace(appFile(appId), {version: 1, generation: GLib.uuid_string_random()}, null);
 }

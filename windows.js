@@ -3,7 +3,7 @@ import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
 
 import {fitFrame, layoutId, monitorIndex, rememberFrame} from './geometry.js';
-import {readPlacement, writePlacement} from './state.js';
+import {placementForLayout, savedAppState, writePlacement} from './state.js';
 
 function connectedMonitors() {
     const logical = global.backend.get_monitor_manager().get_logical_monitors();
@@ -52,10 +52,18 @@ export class WindowPlacement {
             if (entry)
                 this._cancelRestore(entry);
         });
-        connect(this.settings, 'changed::remember-windows', () => {
-            if (!this.settings.get_boolean('remember-windows'))
-                this.pending.clear();
-        });
+        const updateMemory = () => {
+            for (const entry of this.windows.values()) {
+                if (!this._remembering(entry)) {
+                    this._cancelRestore(entry);
+                    this.pending.delete(entry.app);
+                } else if (entry.ready && entry.window.has_focus()) {
+                    this._focus(entry);
+                }
+            }
+        };
+        connect(this.settings, 'changed::remember-windows', updateMemory);
+        connect(this.settings, 'changed::excluded-apps', updateMemory);
         for (const actor of global.get_window_actors())
             this._track(actor, false);
     }
@@ -115,11 +123,14 @@ export class WindowPlacement {
         }
 
         entry.app = appId(entry.window);
-        if (opening && this._remembering(entry)) {
+        if (entry.app) {
             this._flushApp(entry.app);
             const monitors = connectedMonitors();
-            const record = readPlacement(entry.app, layoutId(monitors));
-            if (record && monitors.length)
+            const data = savedAppState(entry.app);
+            entry.generation = data.generation;
+            const record = placementForLayout(data, layoutId(monitors));
+            entry.normal = record?.frame ?? null;
+            if (opening && this._remembering(entry) && record && monitors.length)
                 this._restore(entry, record, monitors);
         }
         entry.ready = true;
@@ -202,7 +213,11 @@ export class WindowPlacement {
     _focus(entry) {
         if (!entry.ready)
             return;
-        entry.app ??= appId(entry.window);
+        if (!entry.app) {
+            entry.app = appId(entry.window);
+            if (entry.app)
+                entry.generation = savedAppState(entry.app).generation;
+        }
         if (entry.app) {
             this.owners.set(entry.app, entry);
             this._capture(entry);
@@ -253,7 +268,7 @@ export class WindowPlacement {
         this.pending.delete(app);
         if (pending && this._remembering(pending.entry)) {
             try {
-                writePlacement(app, pending.layout, pending.record);
+                writePlacement(app, pending.layout, pending.record, pending.entry.generation);
             } catch (error) {
                 console.error('Window Spawner could not save a window placement.', error);
             }
