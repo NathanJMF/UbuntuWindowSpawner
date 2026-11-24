@@ -4,7 +4,7 @@ Move an app to the display you want, resize it, and close it. The next time you 
 
 Built for Ubuntu 26.04 with GNOME Shell 50 on Wayland. It handles both native Wayland and XWayland windows. It runs as a per-user Shell extension and works on its own.
 
-![Window Placement in Quick Settings with the main display selected](docs/quick-settings.png)
+![Window Placement preferences for remembering apps and choosing a display for dialogs](docs/preferences.png)
 
 ## Install or update
 
@@ -22,21 +22,17 @@ To uninstall, run the following command from the same checkout.
 ./uninstall.sh
 ```
 
-Uninstall removes the tile, extension files, preferences, and all remembered positions. A fresh install starts empty. To temporarily return to Ubuntu's usual window placement and keep your saved positions, turn off **Ubuntu Window Spawner** in the Extensions app.
+Uninstall removes the app-search launcher, extension files, preferences, and all remembered positions. A fresh install starts empty. To temporarily return to Ubuntu's usual window placement and keep your saved positions, turn off **Ubuntu Window Spawner** in the Extensions app.
 
 ## Choose where windows open
 
-Open the **system menu** next to the sound and power icons, then expand **Window Placement** using its arrow. The menu follows your panel if you use a bottom taskbar.
+By default, the extension remembers app windows and centers supported dialogs on your main display. To change either setting, press **Super**, search for **Window Placement**, and open it. You can also open preferences for **Ubuntu Window Spawner** in the Extensions app.
 
-| Setting | What it does |
-| --- | --- |
-| **Remember window size and position** | Learns where you use each app and restores it when you open another window. On by default. |
-| **Centered on my main display** | Centers supported dialogs on the display marked primary in Ubuntu's Displays settings. This is the default. |
-| **Choose a specific display…** | Picks a connected display by name. Your main display takes over temporarily if you unplug it. |
-| **Let Ubuntu decide** | Uses normal desktop behavior for dialogs. |
-| **Preferences…** | Lets an individual app manage its own window placement or forgets where it was last used. |
+- **Remember window size and position** controls whether apps reopen where you last used them.
+- **Where should dialogs open?** lets you center dialogs on your main display, pick a specific display, or let Ubuntu decide. If you unplug a chosen display, your main display takes over until you reconnect it.
+- Under **App preferences**, add an exception for an app that handles its own windows, or choose **Forget** to clear its saved positions.
 
-The tile's main switch controls window memory. Its arrow also gives you the dialog controls, including when window memory is off.
+Dialog placement works independently of window memory. Changes apply as you make them.
 
 ## What gets remembered
 
@@ -52,15 +48,15 @@ Window records are stored locally under `$XDG_STATE_HOME/ubuntu-window-spawner` 
 
 ## Using other desktop extensions
 
-Ubuntu Window Spawner reads the window's final frame and leaves subsequent moves and resizes to the desktop. With UbuntuWindowSnapping, you can snap a window, close it, reopen it in the snapped rectangle, and snap it again. Quick Settings uses GNOME's own menu widgets so themes such as Nightfall can style them. With a Dash to Panel taskbar, restored windows fit above the panel even when its height changes. The UbuntuThermals indicator can share that panel. None of these companions is required.
+Ubuntu Window Spawner reads the window's final frame and leaves subsequent moves and resizes to the desktop. With UbuntuWindowSnapping, you can snap a window, close it, reopen it in the snapped rectangle, and snap it again. With a Dash to Panel taskbar, restored windows fit above the panel even when its height changes. The UbuntuThermals indicator can share that panel. None of these companions is required.
 
 ## Verify after login
 
 1. Open a resizable app. Move it to a second display, resize it, close it, and reopen it. Check the display, size, and position.
 2. Maximize the window, close it, reopen it, then unmaximize. Check that its earlier size returns.
 3. Start an action that opens an authentication prompt. Confirm the prompt appears on the chosen display, then cancel it.
-4. Choose **Let Ubuntu decide** and open the prompt again. GNOME should use its normal placement.
-5. Run `./uninstall.sh` and reopen the system menu. The tile should be gone. Reinstalling should start with no saved positions.
+4. Open **Window Placement**, choose **Let Ubuntu decide**, and open the prompt again. GNOME should use its normal placement.
+5. Run `./uninstall.sh` and check that the Window Placement launcher disappears from app search. Reinstalling should start with no saved positions.
 
 ## Tests
 
