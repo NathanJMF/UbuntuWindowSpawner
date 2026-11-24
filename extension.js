@@ -76,7 +76,7 @@ export default class WindowSpawner extends Extension {
         this._settings.connectObject('changed::dialog-monitor', () => this._updateDisplays(), this._tile);
         Main.layoutManager.connectObject('monitors-changed', () => this._updateDisplays(), this._tile);
         this._updateDisplays();
-        Main.panel.statusArea.quickSettings.addExternalIndicator(this._indicator);
+        Main.panel.statusArea.quickSettings.addExternalIndicator(this._indicator, 2);
     }
 
     _updateSubtitle() {
