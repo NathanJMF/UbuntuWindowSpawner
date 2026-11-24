@@ -11,7 +11,11 @@ fi
 
 mkdir -p -- "$data_dir"
 lock_installation
-mkdir -p -- "$extensions_dir"
+mkdir -p -- "$extensions_dir" "$launcher_dir"
+if [[ -e $launcher || -L $launcher ]] && ! owns_launcher; then
+    echo "The application launcher path is already in use: $launcher" >&2
+    exit 1
+fi
 
 # Recover an update interrupted between the two directory renames.
 if [[ -d $previous && ! -e $destination ]]; then
@@ -19,7 +23,12 @@ if [[ -d $previous && ! -e $destination ]]; then
 fi
 rm -rf -- "$previous" "$staging"
 mkdir -p -- "$staging/schemas"
+created_launcher=false
 cleanup() {
+    local result=$?
+    if (( result != 0 )) && "$created_launcher" && owns_launcher; then
+        rm -- "$launcher"
+    fi
     if [[ -d $previous && ! -e $destination ]]; then
         mv -T -- "$previous" "$destination"
     fi
@@ -28,9 +37,15 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
-install -m 644 -- "$source_dir"/metadata.json "$source_dir"/*.js "$staging/"
+install -m 644 -- "$source_dir"/metadata.json "$source_dir/$launcher_name" "$source_dir"/*.js "$staging/"
 install -m 644 -- "$source_dir"/schemas/*.gschema.xml "$staging/schemas/"
 glib-compile-schemas --strict "$staging/schemas"
+
+# The link stays valid when a new version replaces the extension directory.
+if ! owns_launcher; then
+    ln -sT -- "$launcher_target" "$launcher"
+    created_launcher=true
+fi
 
 if [[ -d $destination ]]; then
     mv -T -- "$destination" "$previous"

@@ -26,6 +26,9 @@ if gnome-extensions list --user 2>/dev/null | grep -Fxq -- "$uuid"; then
 fi
 
 dconf reset -f /org/gnome/shell/extensions/ubuntu-window-spawner/
+if owns_launcher; then
+    rm -- "$launcher"
+fi
 rm -rf -- "$destination" "$staging" "$previous" "$state_dir" \
     "$data_dir/gnome-shell/extension-updates/$uuid"
-echo 'Removed Ubuntu Window Spawner, its settings, and all saved window positions.'
+echo 'Removed Ubuntu Window Spawner, its launcher, settings, and all saved window positions.'

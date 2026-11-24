@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Window Placement
+Comment=Choose where applications and dialogs open
+Exec=gnome-extensions prefs ubuntu-window-spawner@local
+Icon=preferences-desktop-display
+Terminal=false
+Categories=Settings;DesktopSettings;
+Keywords=window;position;size;monitor;display;dialog;popup;spawner;

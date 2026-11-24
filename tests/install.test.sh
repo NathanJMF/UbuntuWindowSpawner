@@ -11,7 +11,7 @@ export GSETTINGS_BACKEND=dconf GIO_USE_VFS=local LC_ALL=C
 unset G_RESOURCE_OVERLAYS
 mkdir -m 700 -- "$XDG_RUNTIME_DIR"
 mkdir -p -- "$profile/bin" "$profile/source/schemas"
-cp -r -- "$root/scripts" "$root/install.sh" "$root/uninstall.sh" "$profile/source/"
+cp -r -- "$root/scripts" "$root/ubuntu-window-spawner.desktop" "$root/install.sh" "$root/uninstall.sh" "$profile/source/"
 cat > "$profile/source/schemas/test.gschema.xml" <<'SCHEMA'
 <schemalist>
   <schema id="org.gnome.shell.extensions.ubuntu-window-spawner" path="/org/gnome/shell/extensions/ubuntu-window-spawner/">
@@ -45,6 +45,7 @@ cd "$1"
 uuid=ubuntu-window-spawner@local
 extensions=$XDG_DATA_HOME/gnome-shell/extensions
 installed=$extensions/$uuid
+launcher=$XDG_DATA_HOME/applications/ubuntu-window-spawner.desktop
 state=$XDG_STATE_HOME/ubuntu-window-spawner
 settings=/org/gnome/shell/extensions/ubuntu-window-spawner/
 mkdir -p "$extensions/other-extension" "$XDG_STATE_HOME/other-app"
@@ -53,8 +54,33 @@ gsettings set org.gnome.shell disabled-extensions "['disabled-extension']"
 if TEST_SHELL_VERSION=49 ./install.sh; then exit 1; fi
 test ! -e "$installed"
 
+# An unrelated file at the chosen launcher ID survives installation and removal.
+mkdir -p "$(dirname "$launcher")"
+echo 'Existing desktop entry' > "$launcher"
+if ./install.sh; then exit 1; fi
+./uninstall.sh
+test "$(cat "$launcher")" = 'Existing desktop entry'
+test ! -e "$installed"
+rm -- "$launcher"
+
+# If registration fails after both paths are placed, neither survives.
+mkdir "$XDG_RUNTIME_DIR/fail"
+printf '#!/bin/sh\nexit 1\n' > "$XDG_RUNTIME_DIR/fail/gjs"
+chmod +x "$XDG_RUNTIME_DIR/fail/gjs"
+if PATH="$XDG_RUNTIME_DIR/fail:$PATH" ./install.sh; then exit 1; fi
+test ! -e "$installed"
+test ! -L "$launcher"
+
 ./install.sh
 test -s "$installed/schemas/gschemas.compiled"
+test -L "$launcher"
+cmp ubuntu-window-spawner.desktop "$launcher"
+gjs -c '
+    const app = imports.gi.GioUnix.DesktopAppInfo.new("ubuntu-window-spawner.desktop");
+    if (!app?.should_show() || app.get_name() !== "Window Placement" ||
+        app.get_commandline() !== "gnome-extensions prefs ubuntu-window-spawner@local")
+        throw new Error("Window Placement launcher is missing or invalid");
+'
 cmp extension.js "$installed/extension.js"
 test "$(gsettings get org.gnome.shell enabled-extensions)" = "['other-extension', '$uuid']"
 
@@ -63,8 +89,11 @@ touch "$state/positions"
 dconf write "${settings}remember-windows" false
 gsettings set org.gnome.shell enabled-extensions "['other-extension']"
 gsettings set org.gnome.shell disabled-extensions "['disabled-extension', '$uuid']"
+# Simulate an update from an older release without a launcher.
+rm -- "$launcher" "$installed/ubuntu-window-spawner.desktop"
 echo '// Updated version' > extension.js
 ./install.sh
+cmp ubuntu-window-spawner.desktop "$launcher"
 cmp extension.js "$installed/extension.js"
 test "$(gsettings get org.gnome.shell disabled-extensions)" = "['disabled-extension', '$uuid']"
 test "$(dconf read "${settings}remember-windows")" = false
@@ -89,6 +118,7 @@ dconf write "${settings}obsolete-key" true
 dconf write '/org/gnome/shell/extensions/unrelated/sentinel' true
 ./uninstall.sh
 test -e "$XDG_RUNTIME_DIR/unloaded"
+test ! -L "$launcher"
 for path in "$installed" "$state" "$extensions/.$uuid.previous" "$extensions/.$uuid.installing" \
     "$XDG_DATA_HOME/gnome-shell/extension-updates/$uuid"; do
     test ! -e "$path"
@@ -103,6 +133,10 @@ test "$(gsettings get org.gnome.shell disabled-extensions)" = "['disabled-extens
 ./install.sh
 test "$(GSETTINGS_SCHEMA_DIR="$installed/schemas" gsettings get org.gnome.shell.extensions.ubuntu-window-spawner remember-windows)" = true
 test ! -e "$state"
+# A launcher that replaced our link after install belongs to its new owner.
+rm -- "$launcher"
+ln -s -- unrelated.desktop "$launcher"
 ./uninstall.sh
+test "$(readlink "$launcher")" = unrelated.desktop
 TEST
 echo 'Installer and uninstall checks passed.'
