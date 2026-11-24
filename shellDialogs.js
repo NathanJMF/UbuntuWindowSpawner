@@ -76,8 +76,11 @@ export class ShellDialogs {
     }
 
     disable() {
-        this.group.disconnect(this.added);
-        this.group.disconnect(this.removed);
+        if (this.added)
+            this.group.disconnect(this.added);
+        if (this.removed)
+            this.group.disconnect(this.removed);
+        this.added = this.removed = 0;
         for (const [dialog, record] of this.dialogs) {
             this.restore(dialog, record);
             this.unwatch(dialog);

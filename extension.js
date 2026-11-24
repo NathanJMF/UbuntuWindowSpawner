@@ -1,6 +1,7 @@
 import Gio from 'gi://Gio';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
+import {PopupAnimation} from 'resource:///org/gnome/shell/ui/boxpointer.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as ModalDialog from 'resource:///org/gnome/shell/ui/modalDialog.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
@@ -24,6 +25,15 @@ function activeDisplays() {
 
 export default class WindowSpawner extends Extension {
     enable() {
+        try {
+            this._enable();
+        } catch (error) {
+            this.disable();
+            throw error;
+        }
+    }
+
+    _enable() {
         this._settings = this.getSettings();
         this._placement = new WindowPlacement(this._settings);
         this._placement.enable();
@@ -116,12 +126,13 @@ export default class WindowSpawner extends Extension {
     }
 
     disable() {
-        this._tile.menu.close(0);
-        this._tile.menu.destroy();
-        this._tile.destroy();
-        this._indicator.destroy();
-        this._dialogs.disable();
-        this._placement.disable();
+        // Shell parents the submenu in its overlay, outside the tile's actor tree.
+        this._tile?.menu.close(PopupAnimation.NONE);
+        this._tile?.menu.destroy();
+        this._tile?.destroy();
+        this._indicator?.destroy();
+        this._dialogs?.disable();
+        this._placement?.disable();
         this._chooseDisplay = this._destinations = null;
         this._tile = this._indicator = this._dialogs = this._placement = this._settings = null;
     }
