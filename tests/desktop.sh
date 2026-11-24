@@ -31,4 +31,4 @@ if ! dbus-run-session -- bash "$tests/desktop/session.sh" "$tests" "$@" > "$prof
     exit 1
 fi
 grep -F 'Window Spawner test:' "$XDG_RUNTIME_DIR/shell.log" || true
-echo 'PASS — desktop placement, disable, re-enable and live uninstall'
+echo 'PASS — desktop placement, preferences launcher, Quick Settings, disable, re-enable and live uninstall'

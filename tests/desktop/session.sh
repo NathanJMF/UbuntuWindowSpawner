@@ -30,6 +30,8 @@ fi
 gsettings set org.gnome.shell enabled-extensions "$enabled"
 "$root/install.sh"
 test -s "$extensions/$uuid/schemas/gschemas.compiled"
+launcher="$XDG_DATA_HOME/applications/ubuntu-window-spawner.desktop"
+test -f "$launcher"
 gnome-shell --wayland --headless --virtual-monitor 1280x800 --virtual-monitor 1440x900 \
     --wayland-display spawner-test > "$XDG_RUNTIME_DIR/shell.log" 2>&1 &
 shell_pid=$!
@@ -74,3 +76,5 @@ disabled=$(gsettings get org.gnome.shell disabled-extensions)
 test -z "$(dconf list /org/gnome/shell/extensions/ubuntu-window-spawner/)"
 test ! -e "$extensions/$uuid"
 test ! -e "$XDG_STATE_HOME/ubuntu-window-spawner"
+# A dangling desktop entry would still leave a fragment in the app launcher.
+[[ ! -e $launcher && ! -L $launcher ]]

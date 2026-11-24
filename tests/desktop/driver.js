@@ -1,6 +1,7 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
+import Shell from 'gi://Shell';
 import {ExtensionState} from 'resource:///org/gnome/shell/misc/extensionUtils.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -59,6 +60,24 @@ async function close(window) {
     window.delete(global.get_current_time());
     await wait(() => !byTitle(name), `close ${name}`);
     await delay(350);
+}
+
+function quickSettingsActors() {
+    const quick = Main.panel.statusArea.quickSettings;
+    return [...quick.menu._grid.get_children(), ...quick._indicators.get_children()];
+}
+
+function sameActors(previous, current) {
+    return previous.length === current.length && previous.every(actor => current.includes(actor));
+}
+
+async function checkPreferencesLauncher() {
+    const launcher = Shell.AppSystem.get_default().lookup_app('ubuntu-window-spawner.desktop');
+    check(launcher?.get_app_info()?.should_show(), 'Preferences launcher is discoverable in Show Apps');
+    launcher.activate();
+    const prefs = await wait(() => byTitle('Ubuntu Window Spawner'), 'app launcher to open preferences');
+    check(prefs.get_client_type() === Meta.WindowClientType.WAYLAND, 'App launcher opened native preferences');
+    await close(prefs);
 }
 
 async function checkApplicationDialog(primary) {
@@ -122,6 +141,9 @@ async function run() {
     const primary = global.display.get_primary_monitor();
     const other = 1 - primary;
     const extension = activeExtension(uuid);
+    check(!quickSettingsActors().some(actor => actor.title === 'Window Placement'),
+        'Initial enable leaves the Window Placement tile out of Quick Settings');
+    await checkPreferencesLauncher();
 
     let window = await open();
     check(window.get_client_type() === Meta.WindowClientType.WAYLAND, 'Native Wayland client');
@@ -160,17 +182,17 @@ async function run() {
     check(frame(window) === xFrame, 'XWayland reopens at its saved position and size');
     await close(window);
 
+    const activeActors = quickSettingsActors();
     Main.extensionManager.disableExtension(uuid);
     await wait(() => Main.extensionManager.lookup(uuid)?.state === ExtensionState.INACTIVE, 'disabled extension');
-    const tileVisible = () => Main.panel.statusArea.quickSettings.menu._grid.get_children()
-        .some(item => item.title === 'Window Placement');
-    check(!tileVisible(), 'Disabling removes the Quick Settings tile');
+    check(sameActors(activeActors, quickSettingsActors()), 'Disabling leaves Quick Settings controls unchanged');
     window = await open('x11');
     check(frame(window) !== xFrame, 'Disabled extension leaves window placement to Shell');
     await close(window);
+    const disabledActors = quickSettingsActors();
     Main.extensionManager.enableExtension(uuid);
     await wait(() => Main.extensionManager.lookup(uuid)?.state === ExtensionState.ACTIVE, 're-enabled extension');
-    check(tileVisible(), 'Re-enabling restores the Quick Settings tile');
+    check(sameActors(disabledActors, quickSettingsActors()), 'Re-enabling adds no Quick Settings tile or indicator');
 }
 
 export default class Driver extends Extension {

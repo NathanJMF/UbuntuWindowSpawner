@@ -40,13 +40,112 @@ function chooseException(window, settings) {
     chooser.present();
 }
 
+function addDialogSettings(page, settings, window) {
+    const group = new Adw.PreferencesGroup({
+        title: 'Dialogs',
+        description: 'Choose where file choosers, confirmation windows, and administrator prompts open.',
+    });
+    page.add(group);
+    const where = new Adw.ComboRow({
+        title: 'Where should dialogs open?',
+        use_subtitle: true,
+        model: Gtk.StringList.new(['Centered on my main display', 'Centered on a specific display', 'Let Ubuntu decide']),
+    });
+    const picker = new Adw.ComboRow({title: 'Display', use_markup: false});
+    group.add(where);
+    group.add(picker);
+
+    const monitors = window.get_display().get_monitors();
+    let choices = [];
+    let updating = false;
+    let names = new Map();
+
+    const update = () => {
+        updating = true;
+        const selected = settings.get_string('dialog-monitor');
+        const specific = selected !== 'primary' && selected !== 'system';
+        where.selected = specific ? 1 : selected === 'system' ? 2 : 0;
+        choices = [];
+        for (let i = 0; i < monitors.get_n_items(); i++) {
+            const monitor = monitors.get_item(i);
+            const connector = monitor.get_connector();
+            if (connector)
+                choices.push({connector, name: names.get(connector) || monitor.get_model() || connector});
+        }
+        const labels = choices.map(({connector, name}) =>
+            choices.filter(other => other.name === name).length > 1 ? `${name} (${connector})` : name);
+        let index = choices.findIndex(item => item.connector === selected);
+        const disconnected = specific && index < 0;
+        if (disconnected) {
+            index = choices.length;
+            choices.push({connector: selected});
+            labels.push(`${selected} (disconnected)`);
+        }
+        picker.model = Gtk.StringList.new(labels);
+        picker.selected = index < 0 ? 0 : index;
+        picker.subtitle = disconnected ? 'Using your main display until this one reconnects.' : '';
+        picker.visible = specific;
+        updating = false;
+    };
+
+    where.connect('notify::selected', () => {
+        if (updating)
+            return;
+        const choice = where.selected;
+        if (choice === 1 && !choices.length) {
+            update();
+            return;
+        }
+        const target = choice === 0 ? 'primary' : choice === 2 ? 'system' : choices[0].connector;
+        settings.set_string('dialog-monitor', target);
+    });
+    picker.connect('notify::selected', () => {
+        const choice = choices[picker.selected];
+        if (!updating && choice)
+            settings.set_string('dialog-monitor', choice.connector);
+    });
+
+    // Mutter supplies the friendly names shown in Ubuntu's Displays panel.
+    // GDK keeps the picker usable while the asynchronous lookup is pending.
+    const cancel = new Gio.Cancellable();
+    let revision = 0;
+    const refreshNames = () => {
+        update();
+        const current = ++revision;
+        Gio.DBus.session.call('org.gnome.Mutter.DisplayConfig', '/org/gnome/Mutter/DisplayConfig',
+            'org.gnome.Mutter.DisplayConfig', 'GetCurrentState', null, null,
+            Gio.DBusCallFlags.NONE, 3000, cancel, (bus, result) => {
+                let reply;
+                try {
+                    reply = bus.call_finish(result);
+                } catch {
+                    return;
+                }
+                if (current !== revision || cancel.is_cancelled())
+                    return;
+                const [, physical] = reply.deepUnpack();
+                names = new Map(physical.map(([[connector], _modes, props]) =>
+                    [connector, props['display-name']?.unpack()]));
+                update();
+            });
+    };
+    const displaysChanged = monitors.connect('items-changed', refreshNames);
+    const settingChanged = settings.connect('changed::dialog-monitor', update);
+    refreshNames();
+    return () => {
+        cancel.cancel();
+        monitors.disconnect(displaysChanged);
+        settings.disconnect(settingChanged);
+    };
+}
+
 export default class WindowSpawnerPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         const settings = this.getSettings();
         const page = new Adw.PreferencesPage({title: 'Window Placement'});
         window.add(page);
 
-        const general = new Adw.PreferencesGroup();
+        const general = new Adw.PreferencesGroup({title: 'Windows'});
         page.add(general);
         const remember = new Adw.SwitchRow({
             title: 'Remember window size and position',
@@ -54,6 +153,8 @@ export default class WindowSpawnerPreferences extends ExtensionPreferences {
         });
         general.add(remember);
         settings.bind('remember-windows', remember, 'active', Gio.SettingsBindFlags.DEFAULT);
+
+        const closeDialogSettings = addDialogSettings(page, settings, window);
 
         const apps = new Adw.PreferencesGroup({
             title: 'App preferences',
@@ -108,6 +209,7 @@ export default class WindowSpawnerPreferences extends ExtensionPreferences {
         refresh();
         const changed = settings.connect('changed::excluded-apps', refresh);
         window.connect('close-request', () => {
+            closeDialogSettings();
             settings.disconnect(changed);
             return false;
         });
