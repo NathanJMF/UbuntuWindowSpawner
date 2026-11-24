@@ -52,7 +52,7 @@ Window records are stored locally under `$XDG_STATE_HOME/ubuntu-window-spawner` 
 
 ## Using other desktop extensions
 
-Ubuntu Window Spawner reads the window's final frame and leaves subsequent moves and resizes to the desktop. With UbuntuWindowSnapping, you can snap a window, close it, reopen it in the snapped rectangle, and snap it again. Quick Settings uses GNOME's own menu widgets so themes such as Nightfall can style them. Installation and removal preserve other extensions and their shortcuts.
+Ubuntu Window Spawner reads the window's final frame and leaves subsequent moves and resizes to the desktop. With UbuntuWindowSnapping, you can snap a window, close it, reopen it in the snapped rectangle, and snap it again. Quick Settings uses GNOME's own menu widgets so themes such as Nightfall can style them. With a Dash to Panel taskbar, restored windows fit above the panel even when its height changes. The UbuntuThermals indicator can share that panel. None of these companions is required.
 
 ## Verify after login
 
@@ -73,3 +73,15 @@ gjs -m tests/shell-dialogs.test.js
 ```
 
 These check geometry, state persistence, forgetting, prompt placement, and install/update/removal using temporary data.
+
+For an end-to-end check, the desktop test starts a private GNOME Shell 50 session with two virtual monitors. It installs the extension, opens Wayland and XWayland clients, exercises the Shell prompt with a synthetic request, disables and re-enables the extension, and uninstalls it while Shell is running. The test uses its own settings database and temporary files.
+
+```sh
+./tests/desktop.sh
+```
+
+To repeat with UbuntuWindowSnapping and Nightfall, pass their checkout directories. The optional test also needs Ubuntu Tiling Assistant installed.
+
+```sh
+./tests/desktop.sh --companions ../UbuntuWindowSnapping ../UbuntuNightFall
+```
