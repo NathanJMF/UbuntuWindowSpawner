@@ -38,7 +38,6 @@ export class WindowPlacement {
         this.pending = new Map();
         this.timer = 0;
         this.layout = null;
-        this.layoutSettlesAt = 0;
         this.signals = [];
     }
 
@@ -46,11 +45,23 @@ export class WindowPlacement {
         const connect = (object, signal, fn) =>
             this.signals.push([object, object.connect(signal, fn)]);
         this.layout = layoutId(connectedMonitors());
+        connect(global.backend.get_monitor_manager(), 'monitors-changed', () =>
+            this._monitorChange(layoutId(connectedMonitors())));
         connect(global.window_manager, 'map', (_wm, actor) => this._track(actor, true));
         connect(global.display, 'grab-op-begin', (_display, window) => {
             const entry = this.windows.get(window);
-            if (entry)
+            if (entry) {
+                entry.grabbed = true;
+                entry.layoutSettlesAt = 0;
                 this._cancelRestore(entry);
+            }
+        });
+        connect(global.display, 'grab-op-end', (_display, window) => {
+            const entry = this.windows.get(window);
+            if (entry) {
+                this._capture(entry);
+                entry.grabbed = false;
+            }
         });
         const updateMemory = () => {
             for (const entry of this.windows.values()) {
@@ -88,7 +99,8 @@ export class WindowPlacement {
             return;
 
         const entry = {window, actor, role, signals: [], ready: false, normal: null,
-            app: null, firstFrame: 0, restoreTimer: 0, finishRestore: null};
+            app: null, firstFrame: 0, restoreTimer: 0, finishRestore: null,
+            layoutSettlesAt: 0, grabbed: false};
         this.windows.set(window, entry);
         const on = (signal, fn) => entry.signals.push(window.connect(signal, fn));
         on('unmanaging', () => this._release(entry));
@@ -224,6 +236,17 @@ export class WindowPlacement {
         }
     }
 
+    _monitorChange(layout) {
+        // Only windows already on the desktop can be moved by reconfiguration.
+        this._flush();
+        this.layout = layout;
+        const until = GLib.get_monotonic_time() + 750_000;
+        for (const entry of this.windows.values()) {
+            entry.layoutSettlesAt = entry.grabbed ? 0 : until;
+            entry.layoutUserTime = entry.window.get_user_time();
+        }
+    }
+
     _capture(entry) {
         const window = entry.window;
         if (!entry.ready || entry.finishRestore || this.owners.get(entry.app) !== entry ||
@@ -232,14 +255,11 @@ export class WindowPlacement {
 
         const monitors = connectedMonitors();
         const layout = layoutId(monitors);
-        if (this.layout !== layout) {
-            // Mutter is moving existing windows to fit the new desktop. Do not
-            // replace either layout's saved positions with these transitory frames.
-            this._flush();
-            this.layout = layout;
-            this.layoutSettlesAt = GLib.get_monotonic_time() + 750_000;
-        }
-        if (GLib.get_monotonic_time() < this.layoutSettlesAt)
+        // Geometry can arrive before the monitor manager emits monitors-changed.
+        if (this.layout !== layout)
+            this._monitorChange(layout);
+        if (GLib.get_monotonic_time() < entry.layoutSettlesAt &&
+            entry.layoutUserTime === window.get_user_time())
             return;
         const current = monitors.find(m => m.index === window.get_monitor());
         if (!current)

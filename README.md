@@ -68,6 +68,7 @@ Run the focused checks from the repository root.
 
 ```sh
 gjs -m tests/placement.test.js
+./tests/monitor-change.test.sh
 gjs -m tests/shell-dialogs.test.js
 ./tests/install.test.sh
 ```
