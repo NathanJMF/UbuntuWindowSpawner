@@ -71,8 +71,17 @@ if PATH="$XDG_RUNTIME_DIR/fail:$PATH" ./install.sh; then exit 1; fi
 test ! -e "$installed"
 test ! -L "$launcher"
 
+# Interrupt a fresh install after placing its directory and before registration.
+# A retry must register it, even though it now looks like an existing installation.
+mkdir "$XDG_RUNTIME_DIR/interrupt"
+printf '#!/bin/sh\nkill -KILL "$PPID"\n' > "$XDG_RUNTIME_DIR/interrupt/gjs"
+chmod +x "$XDG_RUNTIME_DIR/interrupt/gjs"
+if PATH="$XDG_RUNTIME_DIR/interrupt:$PATH" ./install.sh; then exit 1; fi
+test "$(gsettings get org.gnome.shell enabled-extensions)" = "['other-extension']"
+
 ./install.sh
 test -s "$installed/schemas/gschemas.compiled"
+test ! -e "$installed/.registration-pending"
 test -L "$launcher"
 cmp ubuntu-window-spawner.desktop "$launcher"
 gjs -c '

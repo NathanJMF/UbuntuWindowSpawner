@@ -26,8 +26,13 @@ mkdir -p -- "$staging/schemas"
 created_launcher=false
 cleanup() {
     local result=$?
-    if (( result != 0 )) && "$created_launcher" && owns_launcher; then
-        rm -- "$launcher"
+    if (( result != 0 )); then
+        if [[ -f $destination/.registration-pending && ! -e $staging ]]; then
+            mv -T -- "$destination" "$staging"
+        fi
+        if "$created_launcher" && owns_launcher; then
+            rm -- "$launcher"
+        fi
     fi
     if [[ -d $previous && ! -e $destination ]]; then
         mv -T -- "$previous" "$destination"
@@ -47,17 +52,21 @@ if ! owns_launcher; then
     created_launcher=true
 fi
 
+# A fresh install still needs registration even if a previous attempt stopped
+# immediately after publishing the files. Updates preserve the user's choice.
+if [[ ! -d $destination || -f $destination/.registration-pending ]]; then
+    touch -- "$staging/.registration-pending"
+fi
 if [[ -d $destination ]]; then
     mv -T -- "$destination" "$previous"
-    mv -T -- "$staging" "$destination"
-    rm -rf -- "$previous"
-    echo 'Updated Ubuntu Window Spawner. Your settings and saved positions were preserved.'
-else
-    mv -T -- "$staging" "$destination"
-    if ! gjs -m "$source_dir/scripts/registration.js" enable "$uuid"; then
-        mv -T -- "$destination" "$staging"
-        exit 1
-    fi
-    echo 'Installed Ubuntu Window Spawner.'
 fi
+mv -T -- "$staging" "$destination"
+if [[ -f $destination/.registration-pending ]]; then
+    gjs -m "$source_dir/scripts/registration.js" enable "$uuid"
+    rm -- "$destination/.registration-pending"
+    echo 'Installed Ubuntu Window Spawner.'
+else
+    echo 'Updated Ubuntu Window Spawner. Your settings and saved positions were preserved.'
+fi
+rm -rf -- "$previous"
 echo 'Log out and back in to load this version in GNOME Shell.'
