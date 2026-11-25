@@ -114,7 +114,14 @@ export class WindowPlacement {
         on('unmanaging', () => this._release(entry));
         if (role === 'app') {
             on('focus', () => this._focus(entry));
-            const changed = () => this._capture(entry, true);
+            const changed = () => {
+                if (!entry.ready && entry.identitySignals &&
+                    entry.window.get_user_time() !== entry.identityUserTime) {
+                    entry.userMovedBeforeId = true;
+                    entry.endIdentityWait?.();
+                }
+                this._capture(entry, true);
+            };
             // Mutter can emit both geometry signals before assigning the new
             // monitor. Capture the final connector and its local work area too.
             for (const signal of ['position-changed', 'size-changed', 'notify::main-monitor',
@@ -139,6 +146,7 @@ export class WindowPlacement {
 
         // Listen only on this unidentified window. A focused window can
         // publish its ID without another focus event.
+        entry.identityUserTime = entry.window.get_user_time();
         const resolve = () => this._resolveIdentity(entry);
         entry.identitySignals = ['notify::wm-class', 'notify::gtk-application-id']
             .map(signal => entry.window.connect(signal, resolve));
@@ -146,7 +154,6 @@ export class WindowPlacement {
             return;
 
         const previousOpacity = entry.actor.get_opacity_override();
-        entry.identityUserTime = entry.window.get_user_time();
         entry.identityDeadline = GLib.get_monotonic_time() + IDENTITY_WAIT_MS * 1000;
         entry.actor.set_opacity_override(0);
         let timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, IDENTITY_WAIT_MS, () => {
