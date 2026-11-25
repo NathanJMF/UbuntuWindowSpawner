@@ -45,14 +45,52 @@ function frame(window) {
     return [x, y, width, height].join(',');
 }
 
-async function open(backend = 'wayland') {
+async function open(backend = 'wayland', wideWindow = false) {
     const launcher = new Gio.SubprocessLauncher({flags: Gio.SubprocessFlags.NONE});
     launcher.setenv('GDK_BACKEND', backend, true);
+    if (wideWindow)
+        launcher.setenv('SPAWNER_TEST_WIDE_WINDOW', '1', true);
     launcher.spawnv(['gjs', '-m', client]);
     const window = await wait(() => byTitle(title), `GTK ${backend} client`);
     // Allow the app to acknowledge configure events and Shell to finish mapping.
     await delay(800);
     return window;
+}
+
+// Sample the mapped client surface at paint time. Shell's launch animation can
+// scale the actor without changing its allocated client size or its frame.
+function paintedGeometry(window) {
+    const actor = window?.get_compositor_private();
+    const surface = actor?.get_first_child();
+    if (!surface?.is_mapped() || !surface.get_paint_opacity())
+        return null;
+    const [width, height] = surface.get_size();
+    return width && height ? `${frame(window)} (client ${width}×${height})` : null;
+}
+
+async function observeOpening(findWindow, launch) {
+    const seen = new Set();
+    const observer = global.stage.connect('after-paint', () => {
+        const sample = paintedGeometry(findWindow());
+        if (sample)
+            seen.add(sample);
+    });
+    try {
+        const window = await launch();
+        return {window, seen};
+    } finally {
+        global.stage.disconnect(observer);
+    }
+}
+
+async function reopenAtSavedFrame(window, backend = 'wayland') {
+    const expected = paintedGeometry(window);
+    check(Boolean(expected), 'Original client has a painted frame');
+    await close(window);
+    const {window: reopened, seen} = await observeOpening(() => byTitle(title), () => open(backend));
+    check(seen.size === 1 && seen.has(expected),
+        `${backend} paints the saved frame from launch (expected ${expected}, saw ${[...seen].join(' → ')})`);
+    return reopened;
 }
 
 async function close(window) {
@@ -80,17 +118,103 @@ async function checkPreferencesLauncher() {
     await close(prefs);
 }
 
+async function checkClientMinimum(monitor) {
+    const window = await open('wayland', true);
+    await wait(() => paintedGeometry(window), 'client with a larger minimum size to become visible');
+    const rect = window.get_frame_rect();
+    check(window.get_monitor() === monitor && rect.width >= 920 && rect.height >= 420,
+        'Client with a new minimum size opens visibly on its remembered monitor');
+    const area = window.get_work_area_for_monitor(monitor);
+    const x = area.x + 88;
+    const y = area.y + 55;
+    window.move_frame(true, x, y);
+    await delay(900);
+    const moved = window.get_frame_rect();
+    check(moved.x === x && moved.y === y, 'User can reposition a constrained window after it opens');
+    await close(window);
+}
+
 async function checkApplicationDialog(primary) {
-    Gio.Subprocess.new(['gapplication', 'action', 'org.example.SpawnerTest', 'dialog'], Gio.SubprocessFlags.NONE);
-    const dialog = await wait(() => byTitle('Placement dialog'), 'standalone transient dialog');
-    await delay(650);
+    const frames = new Set();
+    const observer = global.stage.connect('after-paint', () => {
+        const geometry = paintedGeometry(byTitle('Placement dialog'));
+        if (geometry)
+            frames.add(geometry);
+    });
+    let dialog;
+    try {
+        Gio.Subprocess.new(['gapplication', 'action', 'org.example.SpawnerTest', 'dialog'], Gio.SubprocessFlags.NONE);
+        dialog = await wait(() => byTitle('Placement dialog'), 'standalone transient dialog');
+        await wait(() => frames.size > 0, 'first visible dialog frame');
+        await delay(220);
+    } finally {
+        global.stage.disconnect(observer);
+    }
     const area = dialog.get_work_area_for_monitor(primary);
     const rect = dialog.get_frame_rect();
-    check(dialog.get_monitor() === primary &&
+    check(frames.size === 1 && frames.has(paintedGeometry(dialog)) &&
+        dialog.get_monitor() === primary &&
         Math.abs(rect.x + rect.width / 2 - area.x - area.width / 2) <= 2 &&
         Math.abs(rect.y + rect.height / 2 - area.y - area.height / 2) <= 2,
-    'Transient dialog centered on primary monitor');
+    'Transient dialog centered on its first visible frame');
+    dialog.move_frame(true, area.x + 60, area.y + 45);
+    await delay(650);
+    const moved = dialog.get_frame_rect();
+    check(moved.x === area.x + 60 && moved.y === area.y + 45,
+        'Moving an open dialog keeps the new position');
     await close(dialog);
+}
+
+async function checkFiles(other) {
+    // Files remembers maximization itself. This exercises a client that already
+    // mapped maximized on the launch monitor before our first configure.
+    if (!GLib.find_program_in_path('nautilus')) {
+        console.log('Window Spawner test: Files check skipped (Nautilus unavailable)');
+        return;
+    }
+    const folder = Gio.File.new_for_path(GLib.build_filenamev([
+        GLib.get_user_runtime_dir(), 'Placement test folder',
+    ]));
+    folder.make_directory(null);
+    const name = folder.get_basename();
+    async function openFiles() {
+        Gio.Subprocess.new(['nautilus', '--new-window', folder.get_path()], Gio.SubprocessFlags.NONE);
+        const window = await wait(() => byTitle(name), 'Files test folder');
+        await delay(800);
+        return window;
+    }
+
+    let window = await openFiles();
+    window.unmaximize();
+    const area = window.get_work_area_for_monitor(other);
+    window.move_to_monitor(other);
+    window.move_resize_frame(true, area.x + 100, area.y + 70, 820, 460);
+    await delay(450);
+    const normal = frame(window);
+    check(window.get_monitor() === other && normal.endsWith(',820,460'), 'Files moved to the secondary display');
+    await close(window);
+    window = await openFiles();
+    check(frame(window) === normal, 'Files reopens at its saved floating frame');
+    window.maximize();
+    await delay(450);
+    const maximized = paintedGeometry(window);
+    check(window.is_maximized() && maximized, 'Files maximized on the secondary display');
+    // Flags update synchronously, but Files has not acknowledged a new buffer.
+    // The maximized frame in between these requests must never become its normal size.
+    window.unmaximize();
+    window.maximize();
+    await delay(400);
+    await close(window);
+
+    const observed = await observeOpening(() => byTitle(name), openFiles);
+    window = observed.window;
+    check(window.is_maximized() && window.get_monitor() === other &&
+        observed.seen.size === 1 && observed.seen.has(maximized),
+    'Files opens maximized on the saved monitor from its first visible frame');
+    window.unmaximize();
+    await delay(500);
+    check(frame(window) === normal, 'Unmaximizing Files restores its saved floating frame');
+    await close(window);
 }
 
 async function checkAuthenticationDialog(extension, primary, other) {
@@ -153,14 +277,12 @@ async function run() {
     await delay(950);
     const stored = frame(window);
     check(window.get_monitor() === other && stored.endsWith(',620,380'), 'User moved and resized the window');
-    await close(window);
-    window = await open();
+    window = await reopenAtSavedFrame(window);
     check(frame(window) === stored, 'Wayland reopens at its saved position and size');
     window.maximize();
     await wait(() => window.is_maximized(), 'maximize');
     await delay(600);
-    await close(window);
-    window = await open();
+    window = await reopenAtSavedFrame(window);
     check(window.is_maximized() && window.get_monitor() === other, 'Restored maximized on the remembered monitor');
     window.unmaximize();
     await delay(800);
@@ -170,6 +292,7 @@ async function run() {
         window = await checkSnapping(window, stored);
     await close(window);
     await checkAuthenticationDialog(extension, primary, other);
+    await checkFiles(other);
 
     window = await open('x11');
     check(window.get_client_type() === Meta.WindowClientType.X11, 'XWayland client');
@@ -177,10 +300,16 @@ async function run() {
     await delay(800);
     const xFrame = frame(window);
     check(window.get_monitor() === other && xFrame.endsWith(',580,340'), 'XWayland window moved and resized');
-    await close(window);
-    window = await open('x11');
+    window = await reopenAtSavedFrame(window, 'x11');
     check(frame(window) === xFrame, 'XWayland reopens at its saved position and size');
     await close(window);
+
+    // Both backends of this synthetic GTK app use the same application ID.
+    await checkClientMinimum(other);
+    if (GLib.getenv('SPAWNER_TEST_APPLICATIONS') === '1') {
+        const {checkApplications} = await import('./applications.js');
+        await checkApplications(other, {check, wait, delay, close, observeOpening, paintedGeometry});
+    }
 
     const activeActors = quickSettingsActors();
     Main.extensionManager.disableExtension(uuid);

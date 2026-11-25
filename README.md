@@ -36,11 +36,14 @@ Dialog placement works independently of window memory. Changes apply as you make
 
 ## What gets remembered
 
+- A new window opens on its remembered display, even when you launch it from another one. The extension places it as it opens so you can start using it at its saved size. An already-open window keeps its current placement.
 - The most recently active main window supplies the next placement for that app. Opening a dialog leaves the main window's saved position intact.
 - Maximized windows reopen maximized. When a normal size was previously recorded, unmaximizing returns the window to it.
 - Display positions use the usable area reported by GNOME, including space reserved for panels. Connecting and disconnecting displays gives each combination of display connectors its own saved placements.
 - On a new display combination, the extension uses the last known placement as a starting point. If the original display is missing, the window opens on the primary display. App-enforced minimum sizes still apply.
 - **Forget** clears an app's positions across display layouts. Its currently open windows stop contributing to that record. Opening a new window starts learning again.
+
+GNOME supplies the app identity and window type, so new apps can participate automatically. Apps that share a launch identity can share a saved position. Fullscreen windows stay under the app's control. If an app takes too long to accept its size, its window becomes available and the previous placement is kept for the next launch. You can move or resize any open window yourself.
 
 Movable application dialogs and GNOME Shell modal prompts, including the administrator prompt, follow the dialog setting. GNOME keeps attached sheets with their parent window. Menus, tooltips, and popovers stay anchored to their controls.
 
@@ -52,7 +55,7 @@ Ubuntu Window Spawner reads the window's final frame and leaves subsequent moves
 
 ## Verify after login
 
-1. Open a resizable app. Move it to a second display, resize it, close it, and reopen it. Check the display, size, and position.
+1. Open Files. Move it to a second display, resize it, and close it. Launch Files from the first display. Its first visible window should have the size and position you saved on the second display.
 2. Maximize the window, close it, reopen it, then unmaximize. Check that its earlier size returns.
 3. Start an action that opens an authentication prompt. Confirm the prompt appears on the chosen display, then cancel it.
 4. Open **Window Placement**, choose **Let Ubuntu decide**, and open the prompt again. GNOME should use its normal placement.
@@ -64,6 +67,7 @@ Run the focused checks from the repository root.
 
 ```sh
 gjs -m tests/placement.test.js
+gjs -m tests/restore.test.js
 ./tests/monitor-change.test.sh
 gjs -m tests/shell-dialogs.test.js
 ./tests/install.test.sh
@@ -71,11 +75,25 @@ gjs -m tests/shell-dialogs.test.js
 
 These check geometry, state persistence, forgetting, prompt placement, and install/update/removal using temporary data.
 
-For an end-to-end check, the desktop test starts a private GNOME Shell 50 session with two virtual monitors. It installs the extension, opens Wayland and XWayland clients, exercises the Shell prompt with a synthetic request, disables and re-enables the extension, and uninstalls it while Shell is running. The test uses its own settings database and temporary files.
+For an end-to-end check, the desktop test starts a private GNOME Shell 50 session with two virtual monitors. It checks the first visible frame of reopened Wayland and XWayland windows, the size after unmaximizing, and the placement of dialogs. It also opens preferences from app search and verifies that disabling and uninstalling the extension restore GNOME's behavior. The test uses its own settings database and temporary files.
 
 ```sh
 ./tests/desktop.sh
 ```
+
+The desktop test also exercises Files when Nautilus is installed. Install XTerm, GNOME Calculator, and LibreOffice Writer to check repeated launches with the applications option.
+
+```sh
+./tests/desktop.sh --applications
+```
+
+To test Chromium, pass the browser executable. This command uses the Ubuntu Chromium snap.
+
+```sh
+./tests/desktop.sh --chromium /snap/chromium/current/usr/lib/chromium-browser/chrome
+```
+
+The browser test activates Chromium from the opposite monitor and checks every visible frame on two launches. One profile reopens maximized and the other starts with a new window. Both profiles are disposable.
 
 To repeat with UbuntuWindowSnapping and Nightfall, pass their checkout directories. The optional test also needs Ubuntu Tiling Assistant installed.
 

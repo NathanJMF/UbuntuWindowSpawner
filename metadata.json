@@ -4,5 +4,5 @@
   "description": "Remember where apps open and choose a display for dialogs.",
   "shell-version": ["50"],
   "settings-schema": "org.gnome.shell.extensions.ubuntu-window-spawner",
-  "version": 2
+  "version": 3
 }

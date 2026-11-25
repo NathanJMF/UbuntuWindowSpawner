@@ -2,8 +2,13 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
 
-import {fitFrame, layoutId, monitorIndex, rememberFrame} from './geometry.js';
+import {layoutId, monitorIndex, rememberFrame, sameFrame} from './geometry.js';
+import {restoreAtMap} from './restore.js';
 import {placementForLayout, savedAppState, writePlacement} from './state.js';
+
+// Wayland clients can publish their app ID after mapping. Keep this shorter
+// than the placement handshake so an anonymous window promptly becomes usable.
+const IDENTITY_WAIT_MS = 160;
 
 function connectedMonitors() {
     const logical = global.backend.get_monitor_manager().get_logical_monitors();
@@ -52,6 +57,9 @@ export class WindowPlacement {
             const entry = this.windows.get(window);
             if (entry) {
                 entry.grabbed = true;
+                if (!entry.app)
+                    entry.userMovedBeforeId = true;
+                entry.awaitUserMove = null;
                 entry.layoutSettlesAt = 0;
                 this._cancelRestore(entry);
             }
@@ -99,32 +107,21 @@ export class WindowPlacement {
             return;
 
         const entry = {window, actor, role, signals: [], ready: false, normal: null,
-            app: null, firstFrame: 0, restoreTimer: 0, finishRestore: null,
+            app: null, cancelRestore: null,
             layoutSettlesAt: 0, grabbed: false};
         this.windows.set(window, entry);
         const on = (signal, fn) => entry.signals.push(window.connect(signal, fn));
         on('unmanaging', () => this._release(entry));
         if (role === 'app') {
             on('focus', () => this._focus(entry));
-            const changed = () => {
-                if (entry.finishRestore)
-                    entry.finishRestore(false);
-                else
-                    this._capture(entry);
-            };
-            for (const signal of ['position-changed', 'size-changed',
+            const changed = () => this._capture(entry, true);
+            // Mutter can emit both geometry signals before assigning the new
+            // monitor. Capture the final connector and its local work area too.
+            for (const signal of ['position-changed', 'size-changed', 'notify::main-monitor',
                 'notify::maximized-horizontally', 'notify::maximized-vertically'])
                 on(signal, changed);
         }
-        if (opening) {
-            entry.firstFrame = actor.connect('first-frame', () => {
-                actor.disconnect(entry.firstFrame);
-                entry.firstFrame = 0;
-                this._start(entry, true);
-            });
-        } else {
-            this._start(entry, false);
-        }
+        this._start(entry, opening);
     }
 
     _start(entry, opening) {
@@ -134,17 +131,68 @@ export class WindowPlacement {
             return;
         }
 
-        entry.app = appId(entry.window);
-        if (entry.app) {
-            this._flushApp(entry.app);
-            const monitors = connectedMonitors();
-            const data = savedAppState(entry.app);
-            entry.generation = data.generation;
-            const record = placementForLayout(data, layoutId(monitors));
-            entry.normal = record?.frame ?? null;
-            if (opening && this._remembering(entry) && record && monitors.length)
-                this._restore(entry, record, monitors);
+        const id = appId(entry.window);
+        if (id) {
+            this._identify(entry, id, opening);
+            return;
         }
+
+        // Listen only on this unidentified window. A focused window can
+        // publish its ID without another focus event.
+        const resolve = () => this._resolveIdentity(entry);
+        entry.identitySignals = ['notify::wm-class', 'notify::gtk-application-id']
+            .map(signal => entry.window.connect(signal, resolve));
+        if (!opening || !this.settings.get_boolean('remember-windows') || entry.window.is_fullscreen())
+            return;
+
+        const previousOpacity = entry.actor.get_opacity_override();
+        entry.identityUserTime = entry.window.get_user_time();
+        entry.identityDeadline = GLib.get_monotonic_time() + IDENTITY_WAIT_MS * 1000;
+        entry.actor.set_opacity_override(0);
+        let timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, IDENTITY_WAIT_MS, () => {
+            timer = 0;
+            entry.endIdentityWait();
+            this._resolveIdentity(entry);
+            return GLib.SOURCE_REMOVE;
+        });
+        entry.endIdentityWait = () => {
+            if (timer)
+                GLib.Source.remove(timer);
+            if (!entry.actor.is_destroyed() && entry.actor.get_opacity_override() === 0) {
+                entry.actor.set_opacity_override(previousOpacity);
+                entry.actor.queue_redraw();
+            }
+            entry.endIdentityWait = null;
+        };
+    }
+
+    _resolveIdentity(entry) {
+        if (entry.app)
+            return;
+        const id = appId(entry.window);
+        if (!id)
+            return;
+        const canRestore = entry.endIdentityWait && GLib.get_monotonic_time() < entry.identityDeadline &&
+            entry.window.get_user_time() === entry.identityUserTime;
+        entry.endIdentityWait?.();
+        for (const signal of entry.identitySignals)
+            entry.window.disconnect(signal);
+        entry.identitySignals = null;
+        this._identify(entry, id, canRestore, !canRestore && !entry.userMovedBeforeId);
+    }
+
+    _identify(entry, id, opening, protectSaved = false) {
+        entry.app = id;
+        this._flushApp(id);
+        const monitors = connectedMonitors();
+        const data = savedAppState(id);
+        entry.generation = data.generation;
+        const record = placementForLayout(data, layoutId(monitors));
+        entry.normal = record?.frame ?? null;
+        if (opening && this._remembering(entry) && record && monitors.length)
+            this._restore(entry, record, monitors);
+        else if (protectSaved && record)
+            entry.awaitUserMove = {userTime: entry.window.get_user_time()};
         entry.ready = true;
         if (entry.window.has_focus())
             this._focus(entry);
@@ -174,47 +222,28 @@ export class WindowPlacement {
             return;
 
         entry.normal = record.frame;
-        if (window.get_maximize_flags())
-            window.unmaximize();
-        window.move_to_monitor(index);
-        let target = null;
-        if (record.frame && window.allows_move()) {
-            const resizable = window.allows_resize();
-            target = fitFrame(record.frame, window.get_work_area_for_monitor(index),
-                resizable ? null : window.get_frame_rect());
-            if (resizable)
-                window.move_resize_frame(false, target.x, target.y, target.width, target.height);
-            else
-                window.move_frame(false, target.x, target.y);
-        }
-
-        // A Wayland client may acknowledge its normal frame later. Preserve the
-        // saved frame through that handshake, including a subsequent maximize.
-        entry.finishRestore = force => {
-            const frame = window.get_frame_rect();
-            if (!force && target &&
-                (frame.x !== target.x || frame.y !== target.y ||
-                    frame.width !== target.width || frame.height !== target.height))
-                return;
-            this._cancelRestore(entry);
-            if (record.maximized && window.can_maximize())
-                window.set_maximize_flags(record.maximized);
-            this._capture(entry);
+        const finish = settled => {
+            entry.cancelRestore = null;
+            if (settled) {
+                this._capture(entry);
+            } else {
+                // A client that hasn't accepted its request can appear in its
+                // own default frame. Keep the saved placement until it changes.
+                entry.unconfirmed = {frame: window.get_frame_rect(), flags: window.get_maximize_flags()};
+            }
         };
-        entry.restoreTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 450, () => {
-            entry.restoreTimer = 0;
-            entry.finishRestore(true);
-            return GLib.SOURCE_REMOVE;
-        });
-        entry.finishRestore(false);
+        try {
+            entry.cancelRestore = restoreAtMap(window, entry.actor, record, index, finish);
+        } catch (error) {
+            console.error('Window Spawner could not start a launch placement.', error);
+            finish(false);
+        }
     }
 
     _cancelRestore(entry) {
-        if (entry.restoreTimer) {
-            GLib.Source.remove(entry.restoreTimer);
-            entry.restoreTimer = 0;
-        }
-        entry.finishRestore = null;
+        entry.endIdentityWait?.();
+        entry.cancelRestore?.();
+        entry.cancelRestore = null;
     }
 
     _remembering(entry) {
@@ -223,17 +252,13 @@ export class WindowPlacement {
     }
 
     _focus(entry) {
-        if (!entry.ready)
+        if (!entry.ready) {
+            if (entry.identitySignals)
+                this._resolveIdentity(entry);
             return;
-        if (!entry.app) {
-            entry.app = appId(entry.window);
-            if (entry.app)
-                entry.generation = savedAppState(entry.app).generation;
         }
-        if (entry.app) {
-            this.owners.set(entry.app, entry);
-            this._capture(entry);
-        }
+        this.owners.set(entry.app, entry);
+        this._capture(entry);
     }
 
     _monitorChange(layout) {
@@ -242,16 +267,25 @@ export class WindowPlacement {
         this.layout = layout;
         const until = GLib.get_monotonic_time() + 750_000;
         for (const entry of this.windows.values()) {
+            this._cancelRestore(entry);
             entry.layoutSettlesAt = entry.grabbed ? 0 : until;
             entry.layoutUserTime = entry.window.get_user_time();
         }
     }
 
-    _capture(entry) {
+    _capture(entry, geometryChanged = false) {
         const window = entry.window;
-        if (!entry.ready || entry.finishRestore || this.owners.get(entry.app) !== entry ||
+        if (!entry.ready || entry.cancelRestore || this.owners.get(entry.app) !== entry ||
             !this._remembering(entry) || window.minimized || window.is_fullscreen())
             return;
+
+        // If the ID came after reveal, avoid both a visible jump and saving
+        // the launcher's default frame over the previous deliberate placement.
+        if (entry.awaitUserMove) {
+            if (!geometryChanged || entry.awaitUserMove.userTime === window.get_user_time())
+                return;
+            entry.awaitUserMove = null;
+        }
 
         const monitors = connectedMonitors();
         const layout = layoutId(monitors);
@@ -269,8 +303,20 @@ export class WindowPlacement {
         if (frame.width <= 0 || frame.height <= 0 || area.width <= 0 || area.height <= 0)
             return;
         const maximized = window.get_maximize_flags();
-        if (!maximized)
+        if (entry.unconfirmed) {
+            const previous = entry.unconfirmed;
+            if (sameFrame(frame, previous.frame) && previous.flags === maximized)
+                return;
+            entry.unconfirmed = null;
+        }
+        if (maximized) {
+            entry.maximizedFrame = frame;
+        } else if (!entry.maximizedFrame || !sameFrame(entry.maximizedFrame, frame)) {
+            // Unmaximize changes the flags before the client supplies its normal
+            // frame. A rapid remaximize or close must retain the earlier normal size.
             entry.normal = rememberFrame(frame, area);
+            entry.maximizedFrame = null;
+        }
         this.pending.set(entry.app, {entry, layout,
             record: {connector: current.connector, frame: entry.normal, maximized}});
         // Coalesce an interactive drag and flush its last sample on close or relaunch.
@@ -306,9 +352,7 @@ export class WindowPlacement {
             this.owners.delete(entry.app);
         }
         this._cancelRestore(entry);
-        if (entry.firstFrame)
-            entry.actor.disconnect(entry.firstFrame);
-        for (const id of entry.signals)
+        for (const id of [...entry.signals, ...(entry.identitySignals ?? [])])
             entry.window.disconnect(id);
         this.windows.delete(entry.window);
     }

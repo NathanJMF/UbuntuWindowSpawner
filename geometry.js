@@ -5,6 +5,10 @@ export function layoutId(monitors) {
     return JSON.stringify(monitors.map(m => m.connector).sort());
 }
 
+export function sameFrame(a, b) {
+    return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+}
+
 export function rememberFrame(frame, area) {
     return {
         width: frame.width,

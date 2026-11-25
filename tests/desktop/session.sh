@@ -14,7 +14,33 @@ night=nightfall-popups@ubuntu-nightfall.local
 tiling=tiling-assistant@ubuntu.com
 
 mkdir -p "$extensions/$driver"
-cp "$tests/desktop/driver.js" "$extensions/$driver/extension.js"
+if [[ -n ${SPAWNER_TEST_CHROMIUM:-} ]]; then
+    cp "$tests/desktop/chromium.js" "$extensions/$driver/extension.js"
+    mkdir -p "$XDG_DATA_HOME/applications" "$XDG_RUNTIME_DIR/bin"
+    cat > "$XDG_RUNTIME_DIR/bin/spawner-test-chromium" <<'BROWSER'
+#!/usr/bin/env bash
+set -eu
+profile=$XDG_STATE_HOME/browser
+if [[ -e $XDG_RUNTIME_DIR/windowed-profile ]]; then profile=$XDG_STATE_HOME/fresh-browser; fi
+exec "$SPAWNER_TEST_CHROMIUM" --user-data-dir="$profile" --ozone-platform=wayland \
+    --class=chromium --no-first-run --no-default-browser-check --password-store=basic \
+    --disable-background-networking --disable-component-update --disable-sync --disable-gpu about:blank
+BROWSER
+    chmod +x "$XDG_RUNTIME_DIR/bin/spawner-test-chromium"
+    export PATH="$XDG_RUNTIME_DIR/bin:$PATH"
+    cat > "$XDG_DATA_HOME/applications/chromium_chromium.desktop" <<'DESKTOP'
+[Desktop Entry]
+Type=Application
+Name=Placement Browser
+StartupWMClass=chromium
+Exec=spawner-test-chromium
+DESKTOP
+else
+    cp "$tests/desktop/driver.js" "$extensions/$driver/extension.js"
+    if [[ ${SPAWNER_TEST_APPLICATIONS:-0} == 1 ]]; then
+        cp "$tests/desktop/applications.js" "$extensions/$driver/"
+    fi
+fi
 echo '{"uuid":"window-placement-test@local","name":"Window placement test","description":"Headless desktop test driver","shell-version":["50"]}' > "$extensions/$driver/metadata.json"
 enabled="['$driver']"
 if (( $# )); then
@@ -51,7 +77,9 @@ if [[ ! -s $result ]]; then echo 'Timed out waiting for desktop tests' >&2; exit
 cat "$result"
 grep -Fxq 'PASS' "$result"
 test -d "$XDG_STATE_HOME/ubuntu-window-spawner"
-test -n "$(dconf list /org/gnome/shell/extensions/ubuntu-window-spawner/)"
+if [[ -z ${SPAWNER_TEST_CHROMIUM:-} ]]; then
+    test -n "$(dconf list /org/gnome/shell/extensions/ubuntu-window-spawner/)"
+fi
 before=$(gnome-extensions list --active)
 grep -Fxq "$uuid" <<<"$before"
 "$root/uninstall.sh"
