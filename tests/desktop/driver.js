@@ -45,27 +45,42 @@ function frame(window) {
     return [x, y, width, height].join(',');
 }
 
-async function open(backend = 'wayland', wideWindow = false) {
+async function open(backend = 'wayland', mode = '') {
     const launcher = new Gio.SubprocessLauncher({flags: Gio.SubprocessFlags.NONE});
     launcher.setenv('GDK_BACKEND', backend, true);
-    if (wideWindow)
-        launcher.setenv('SPAWNER_TEST_WIDE_WINDOW', '1', true);
+    launcher.setenv('SPAWNER_TEST_WINDOW_MODE', mode, true);
     launcher.spawnv(['gjs', '-m', client]);
+    if (mode === 'startup') {
+        const splash = await wait(() => byTitle('Starting test app'), 'fixed startup window');
+        Main.activateWindow(splash);
+        await wait(() => splash.has_focus(), 'startup window to take focus');
+        check(splash.get_window_type() === Meta.WindowType.NORMAL && !splash.allows_resize(),
+            'Startup window is a fixed-size normal window');
+        await delay(1200); // Include a slow startup that outlasts placement and write timers.
+        Gio.Subprocess.new(['gapplication', 'action', 'org.example.SpawnerTest', 'finish-startup'], Gio.SubprocessFlags.NONE);
+    }
     const window = await wait(() => byTitle(title), `GTK ${backend} client`);
     // Allow the app to acknowledge configure events and Shell to finish mapping.
     await delay(800);
     return window;
 }
 
-// Sample the mapped client surface at paint time. Shell's launch animation can
-// scale the actor without changing its allocated client size or its frame.
+// An actor can report the final frame while its pixels are still translating,
+// scaling or fading. Sample the rendered surface and any Shell resize clone.
 function paintedGeometry(window) {
     const actor = window?.get_compositor_private();
+    const clone = actor?.__animationInfo?.clone;
+    if (clone?.is_mapped() && clone.get_paint_opacity())
+        return 'Shell resize overlay';
     const surface = actor?.get_first_child();
-    if (!surface?.is_mapped() || !surface.get_paint_opacity())
+    if (!surface?.is_mapped() || actor.get_opacity_override() === 0 || !surface.get_paint_opacity())
         return null;
     const [width, height] = surface.get_size();
-    return width && height ? `${frame(window)} (client ${width}×${height})` : null;
+    if (!width || !height)
+        return null;
+    const painted = [...surface.get_transformed_position(), ...surface.get_transformed_size()]
+        .map(value => Math.round(value * 10) / 10);
+    return `${frame(window)} (client ${width}×${height}, stage ${painted}, opacity ${surface.get_paint_opacity()})`;
 }
 
 async function observeOpening(findWindow, launch) {
@@ -83,11 +98,11 @@ async function observeOpening(findWindow, launch) {
     }
 }
 
-async function reopenAtSavedFrame(window, backend = 'wayland') {
+async function reopenAtSavedFrame(window, backend = 'wayland', mode = '') {
     const expected = paintedGeometry(window);
     check(Boolean(expected), 'Original client has a painted frame');
     await close(window);
-    const {window: reopened, seen} = await observeOpening(() => byTitle(title), () => open(backend));
+    const {window: reopened, seen} = await observeOpening(() => byTitle(title), () => open(backend, mode));
     check(seen.size === 1 && seen.has(expected),
         `${backend} paints the saved frame from launch (expected ${expected}, saw ${[...seen].join(' → ')})`);
     return reopened;
@@ -119,7 +134,7 @@ async function checkPreferencesLauncher() {
 }
 
 async function checkClientMinimum(monitor) {
-    const {window, seen} = await observeOpening(() => byTitle(title), () => open('wayland', true));
+    const {window, seen} = await observeOpening(() => byTitle(title), () => open('wayland', 'wide'));
     const rect = window.get_frame_rect();
     const area = window.get_work_area_for_monitor(monitor);
     check(window.get_monitor() === monitor && rect.width >= 920 && rect.height >= 420 &&
@@ -164,6 +179,44 @@ async function checkApplicationDialog(primary) {
     check(moved.x === area.x + 60 && moved.y === area.y + 45,
         'Moving an open dialog keeps the new position');
     await close(dialog);
+}
+
+async function checkStartupHandoff(monitor, backend) {
+    let window = await open(backend, 'startup');
+    if (backend === 'wayland')
+        check(window.get_frame_rect().width === 1080,
+            `First launch preserves the main window's 1080-pixel default width (saw ${frame(window)})`);
+    const area = window.get_work_area_for_monitor(monitor);
+    window.unmaximize();
+    window.move_to_monitor(monitor);
+    window.move_resize_frame(true, area.x + 80, area.y + 65, 1060, 620);
+    await wait(() => window.get_frame_rect().width === 1060 && window.has_focus(), 'main window resized');
+    await delay(350);
+    const original = frame(window);
+    window = await reopenAtSavedFrame(window, backend, 'startup');
+    window.maximize();
+    await wait(() => window.is_maximized() && window.get_frame_rect().width === area.width, 'main window maximized');
+    await delay(350);
+    window = await reopenAtSavedFrame(window, backend, 'startup');
+    check(window.is_maximized() && window.get_monitor() === monitor,
+        `${backend} startup window preserves the main window's maximized state`);
+    window.unmaximize();
+    await wait(() => frame(window) === original, 'main window retains its floating frame');
+    await close(window);
+}
+
+async function checkFixedUtility(monitor) {
+    let window = await open('wayland', 'fixed');
+    check(!window.allows_resize(), 'Fixed-size utility opened');
+    const area = window.get_work_area_for_monitor(monitor);
+    window.move_to_monitor(monitor);
+    window.move_frame(true, area.x + 136, area.y + 93);
+    await wait(() => window.get_monitor() === monitor && window.get_frame_rect().x === area.x + 136,
+        'fixed-size utility moved');
+    await delay(350);
+    window = await reopenAtSavedFrame(window, 'wayland', 'fixed');
+    check(window.get_monitor() === monitor, 'Fixed-size utility remembers its chosen display');
+    await close(window);
 }
 
 async function checkFiles(other) {
@@ -282,7 +335,7 @@ async function checkSnapping(window, originalFrame) {
 
 async function run() {
     await wait(() => Main.extensionManager.lookup(uuid)?.state === ExtensionState.ACTIVE, 'Window Spawner to enable');
-    await delay(1600);
+    await wait(() => !Main.layoutManager._startingUp, 'Shell startup to complete');
     Main.overview.hide();
     await delay(600);
     check(global.display.get_n_monitors() === 2, 'Two virtual monitors');
@@ -291,6 +344,9 @@ async function run() {
     const extension = activeExtension(uuid);
     check(!quickSettingsActors().some(actor => actor.title === 'Window Placement'),
         'Initial enable leaves the Window Placement tile out of Quick Settings');
+    await checkStartupHandoff(other, 'wayland');
+    await checkStartupHandoff(other, 'x11');
+    await checkFixedUtility(other);
     await checkPreferencesLauncher();
 
     let window = await open();

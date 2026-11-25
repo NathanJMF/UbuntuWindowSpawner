@@ -37,7 +37,9 @@ Dialog placement works independently of window memory. Changes apply as you make
 ## What gets remembered
 
 - A new window opens on its remembered display, even when you launch it from another one. The extension places it as it opens so you can start using it at its saved size. An already-open window keeps its current placement.
+- Managed windows appear directly at their saved position. GNOME still animates later actions such as maximizing a window yourself.
 - The most recently active main window supplies the next placement for that app. Opening a dialog leaves the main window's saved position intact.
+- Fixed-size windows remember their position separately. Apps such as Discord can show a small startup window and then reopen their main window at its usual size.
 - Maximized windows reopen maximized. When a normal size was previously recorded, unmaximizing returns the window to it.
 - If you maximize just the height or width, the other dimension can still be moved or resized. Reopening restores that adjustment, and unmaximizing returns to the earlier normal rectangle.
 - Display positions use the usable area reported by GNOME, including space reserved for panels. Connecting and disconnecting displays gives each combination of display connectors its own saved placements.

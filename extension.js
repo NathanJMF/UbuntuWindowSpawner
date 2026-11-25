@@ -17,7 +17,7 @@ export default class WindowSpawner extends Extension {
 
     _enable() {
         this._settings = this.getSettings();
-        this._placement = new WindowPlacement(this._settings);
+        this._placement = new WindowPlacement(this._settings, actor => Main.wm.skipNextEffect(actor));
         this._placement.enable();
 
         this._dialogs = new ShellDialogs(Main.layoutManager.modalDialogGroup,

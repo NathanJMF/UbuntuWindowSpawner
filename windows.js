@@ -1,4 +1,5 @@
 import GLib from 'gi://GLib';
+import GObject from 'gi://GObject';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
 
@@ -35,9 +36,16 @@ function kind(window) {
     return type === Meta.WindowType.NORMAL && !window.is_skip_taskbar() ? 'app' : null;
 }
 
+function fixedSize(window) {
+    // Mutter also disallows resizing while fullscreen or fully maximized.
+    return !window.is_fullscreen() && !window.get_maximize_flags() && !window.allows_resize();
+}
+
 export class WindowPlacement {
-    constructor(settings) {
+    constructor(settings, skipNextEffect = null) {
         this.settings = settings;
+        this.skipNextEffect = skipNextEffect;
+        this.effectHooks = [];
         this.windows = new Map();
         this.owners = new Map();
         this.pending = new Map();
@@ -50,6 +58,25 @@ export class WindowPlacement {
         const connect = (object, signal, fn) =>
             this.signals.push([object, object.connect(signal, fn)]);
         this.layout = layoutId(connectedMonitors());
+        if (this.skipNextEffect) {
+            // Emission hooks run before Shell's own handlers create a map
+            // animation or a snapshot of the window at its previous location.
+            this._skipEffectWhen('map', actor => {
+                const window = actor.meta_window;
+                if (this.windows.has(window) || window.is_fullscreen())
+                    return false;
+                const role = kind(window);
+                if (role === 'dialog')
+                    return this.settings.get_string('dialog-monitor') !== 'system' &&
+                        !window.is_attached_dialog() && window.allows_move();
+                return role === 'app' && this.settings.get_boolean('remember-windows') &&
+                    !this.settings.get_strv('excluded-apps').includes(appId(window));
+            });
+            this._skipEffectWhen('size-change', actor => {
+                const entry = this.windows.get(actor.meta_window);
+                return entry?.startingRestore || entry?.cancelRestore;
+            });
+        }
         connect(global.backend.get_monitor_manager(), 'monitors-changed', () =>
             this._monitorChange(layoutId(connectedMonitors())));
         connect(global.window_manager, 'map', (_wm, actor) => this._track(actor, true));
@@ -91,7 +118,20 @@ export class WindowPlacement {
             this._track(actor, false);
     }
 
+    _skipEffectWhen(name, applies) {
+        const signal = GObject.signal_lookup(name, Shell.WM.$gtype);
+        const hook = GObject.signal_add_emission_hook(signal, 0, (_hint, [manager, actor]) => {
+            if (manager === global.window_manager && applies(actor))
+                this.skipNextEffect(actor);
+            return true;
+        });
+        this.effectHooks.push([signal, hook]);
+    }
+
     disable() {
+        for (const [signal, hook] of this.effectHooks)
+            GObject.signal_remove_emission_hook(signal, hook);
+        this.effectHooks = [];
         for (const [object, id] of this.signals)
             object.disconnect(id);
         this.signals = [];
@@ -118,6 +158,21 @@ export class WindowPlacement {
         on('unmanaging', () => this._release(entry));
         if (role === 'app') {
             on('focus', () => this._focus(entry));
+            on('notify::resizeable', () => {
+                if (!entry.ready || entry.window.get_maximize_flags() || entry.window.is_fullscreen())
+                    return;
+                const fixed = fixedSize(entry.window);
+                if (fixed === entry.fixed)
+                    return;
+                // Some clients change the same surface from a fixed startup
+                // window into a resizable main window after it is visible.
+                this._flushApp(entry.app);
+                this._cancelRestore(entry);
+                entry.maximizedFrame = null;
+                entry.unconfirmed = null;
+                entry.awaitUserMove = null;
+                this._identify(entry, entry.app, false, true);
+            });
             const changed = () => {
                 if (!entry.ready && entry.identitySignals &&
                     entry.window.get_user_time() !== entry.identityUserTime) {
@@ -197,8 +252,21 @@ export class WindowPlacement {
         this._flushApp(id);
         const monitors = connectedMonitors();
         const data = savedAppState(id);
-        entry.generation = data.generation;
-        const record = placementForLayout(data, layoutId(monitors));
+        // A capability change on an existing window must still respect Forget.
+        if (!entry.ready)
+            entry.generation = data.generation;
+        entry.fixed = fixedSize(entry.window);
+        const layout = layoutId(monitors);
+        let record = placementForLayout(data, layout, entry.fixed);
+        if (entry.fixed && !record) {
+            // Older versions kept one record. A matching normal frame lets
+            // fixed-size apps retain their previously saved position.
+            const legacy = placementForLayout(data, layout);
+            const frame = entry.window.get_frame_rect();
+            if (legacy?.maximized === 0 && legacy.frame?.width === frame.width &&
+                legacy.frame.height === frame.height)
+                record = legacy;
+        }
         entry.normal = record?.frame ?? null;
         if (opening && this._remembering(entry) && record && monitors.length)
             this._restore(entry, record, monitors);
@@ -243,6 +311,7 @@ export class WindowPlacement {
                 entry.unconfirmed = {frame: window.get_frame_rect(), flags: window.get_maximize_flags()};
             }
         };
+        entry.startingRestore = true;
         try {
             const areas = record.frame?.span || record.partial?.span
                 ? monitors.map(m => window.get_work_area_for_monitor(m.index)) : [];
@@ -250,6 +319,8 @@ export class WindowPlacement {
         } catch (error) {
             console.error('Window Spawner could not start a launch placement.', error);
             finish(false);
+        } finally {
+            entry.startingRestore = false;
         }
     }
 
@@ -270,6 +341,9 @@ export class WindowPlacement {
                 this._resolveIdentity(entry);
             return;
         }
+        const previous = this.owners.get(entry.app);
+        if (previous && previous.fixed !== entry.fixed)
+            this._flushApp(entry.app);
         this.owners.set(entry.app, entry);
         this._capture(entry);
     }
@@ -342,7 +416,7 @@ export class WindowPlacement {
             record.frame = entry.normal;
             entry.maximizedFrame = null;
         }
-        this.pending.set(entry.app, {entry, layout, record});
+        this.pending.set(entry.app, {entry, layout, record, fixed: entry.fixed});
         // Coalesce an interactive drag and flush its last sample on close or relaunch.
         if (this.timer)
             GLib.Source.remove(this.timer);
@@ -358,7 +432,7 @@ export class WindowPlacement {
         this.pending.delete(app);
         if (pending && this._remembering(pending.entry)) {
             try {
-                writePlacement(app, pending.layout, pending.record, pending.entry.generation);
+                writePlacement(app, pending.layout, pending.record, pending.entry.generation, pending.fixed);
             } catch (error) {
                 console.error('Window Spawner could not save a window placement.', error);
             }

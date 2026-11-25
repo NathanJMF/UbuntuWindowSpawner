@@ -47,6 +47,7 @@ class TestWindow extends Signals {
     get_user_time() { return this.userTime; }
     has_focus() { return true; }
     is_fullscreen() { return false; }
+    allows_resize() { return true; }
     get_monitor() { return 0; }
     get_work_area_for_monitor() { return {x: 0, y: 0, width: 1280, height: 720}; }
     get_frame_rect() { return {x: 0, y: 0, width: this.width, height: 220}; }

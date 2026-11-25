@@ -72,12 +72,20 @@ if (ARGV[0] !== '--state-test') {
     writePlacement(id, soloKey, internal);
     equal(readPlacement(id, dockKey), external);
     equal(readPlacement(id, soloKey), internal);
+    // A focused splash can close before or after the main window maps.
+    // Its position has independent per-display memory under the same app ID.
+    const fixed = {...external, frame: {...relative, width: 300, height: 350}};
+    writePlacement(id, dockKey, fixed, undefined, true);
+    equal(placementForLayout(savedAppState(id), soloKey, true), fixed);
+    equal(readPlacement(id, soloKey), internal);
+    equal(readPlacement(id, dockKey), external);
     writePlacement('Viewer.desktop', dockKey, external);
     equal(listSavedApps(), ['Viewer.desktop', id]);
     forgetSavedApp(id);
     forgetSavedApp(id);
     equal(listSavedApps(), ['Viewer.desktop']);
     equal(readPlacement(id, soloKey), null);
+    equal(placementForLayout(savedAppState(id), dockKey, true), null);
     writePlacement(id, dockKey, external); // A pending write from before Forget.
     equal(readPlacement(id, dockKey), null);
     const generation = savedAppState(id).generation;

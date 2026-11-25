@@ -74,15 +74,21 @@ async function run() {
         let wrong = null;
         const painted = global.stage.connect('after-paint', () => {
             const actor = browserActor();
+            const clone = actor?.__animationInfo?.clone;
+            if (clone?.is_mapped() && clone.get_paint_opacity())
+                wrong ??= 'a visible snapshot at the old position';
             if (!actor?.is_mapped() || actor.get_opacity_override() === 0 || !actor.get_paint_opacity())
                 return;
             visible++;
             const w = actor.meta_window;
             const r = w.get_frame_rect();
+            const [x, y] = actor.get_transformed_position().map(Math.round);
+            const [width, height] = actor.get_transformed_size().map(Math.round);
             if (w.get_monitor() !== target || !w.is_maximized() ||
                 r.x !== area.x || r.y !== area.y || r.width !== area.width || r.height !== area.height ||
-                actor.width !== area.width || actor.height !== area.height)
-                wrong ??= `monitor ${w.get_monitor()} at ${r.x},${r.y} ${r.width}×${r.height} (actor ${actor.width}×${actor.height})`;
+                x !== area.x || y !== area.y || width !== area.width || height !== area.height ||
+                actor.get_paint_opacity() !== 255)
+                wrong ??= `monitor ${w.get_monitor()} at ${x},${y} ${width}×${height}, opacity ${actor.get_paint_opacity()}`;
         });
         try {
             window = await launch();

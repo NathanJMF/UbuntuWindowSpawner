@@ -35,8 +35,9 @@ export function savedAppState(appId) {
     return readFile(appFile(appId)).data;
 }
 
-export function placementForLayout(data, layout) {
-    const record = data.layouts?.[layout] ?? data.layouts?.[data.latestLayout];
+export function placementForLayout(data, layout, fixed = false) {
+    const source = fixed ? data.fixed : data;
+    const record = source?.layouts?.[layout] ?? source?.layouts?.[source.latestLayout];
     if (!record || typeof record.connector !== 'string' ||
         !Number.isInteger(record.maximized) || record.maximized < 0 || record.maximized > 3 ||
         (record.frame !== null && !validFrame(record.frame)))
@@ -50,21 +51,27 @@ function replace(file, data, etag) {
     file.replace_contents(JSON.stringify(data), etag, false, Gio.FileCreateFlags.PRIVATE, null);
 }
 
-export function writePlacement(appId, layout, record, generation) {
+export function writePlacement(appId, layout, record, generation, fixed = false) {
     const file = appFile(appId);
     const {data, etag} = readFile(file);
     // Open windows retain their generation. Forgetting an app invalidates its
     // delayed writes too, even if another window has since started recording.
     if (data.generation !== generation)
         return;
-    if (layout === data.latestLayout && JSON.stringify(data.layouts?.[layout]) === JSON.stringify(record))
+    // A fixed-size startup window can share its desktop ID with the main
+    // window. Each has its own last display layout and geometry.
+    if (fixed && (!data.fixed || typeof data.fixed !== 'object' || Array.isArray(data.fixed)))
+        data.fixed = {};
+    const target = fixed ? data.fixed : data;
+    if (layout === target.latestLayout && JSON.stringify(target.layouts?.[layout]) === JSON.stringify(record))
         return;
 
     data.version = 1;
     data.appId = appId;
-    data.latestLayout = layout;
-    data.layouts ??= {};
-    data.layouts[layout] = record;
+    target.latestLayout = layout;
+    if (!target.layouts || typeof target.layouts !== 'object' || Array.isArray(target.layouts))
+        target.layouts = {};
+    target.layouts[layout] = record;
     try {
         replace(file, data, etag);
     } catch (error) {

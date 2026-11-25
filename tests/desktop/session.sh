@@ -53,6 +53,7 @@ if (( $# )); then
     export SPAWNER_TEST_COMPANIONS=1
 fi
 
+gsettings set org.gnome.desktop.interface enable-animations true
 gsettings set org.gnome.shell enabled-extensions "$enabled"
 "$root/install.sh"
 test -s "$extensions/$uuid/schemas/gschemas.compiled"
