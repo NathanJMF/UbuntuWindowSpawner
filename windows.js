@@ -61,6 +61,10 @@ export class WindowPlacement {
                     entry.userMovedBeforeId = true;
                 entry.awaitUserMove = null;
                 entry.layoutSettlesAt = 0;
+                // Starting a grab hands placement to the user immediately.
+                // Escape can end it with the unacknowledged launch frame intact.
+                if (entry.cancelRestore)
+                    entry.unconfirmed = {frame: window.get_frame_rect(), flags: window.get_maximize_flags()};
                 this._cancelRestore(entry);
             }
         });
@@ -240,7 +244,9 @@ export class WindowPlacement {
             }
         };
         try {
-            entry.cancelRestore = restoreAtMap(window, entry.actor, record, index, finish);
+            const areas = record.frame?.span || record.partial?.span
+                ? monitors.map(m => window.get_work_area_for_monitor(m.index)) : [];
+            entry.cancelRestore = restoreAtMap(window, entry.actor, record, index, finish, areas);
         } catch (error) {
             console.error('Window Spawner could not start a launch placement.', error);
             finish(false);
@@ -302,10 +308,12 @@ export class WindowPlacement {
         if (GLib.get_monotonic_time() < entry.layoutSettlesAt &&
             entry.layoutUserTime === window.get_user_time())
             return;
-        const current = monitors.find(m => m.index === window.get_monitor());
-        if (!current)
+        const currentIndex = monitors.findIndex(m => m.index === window.get_monitor());
+        if (currentIndex < 0)
             return;
-        const area = window.get_work_area_for_monitor(current.index);
+        const current = monitors[currentIndex];
+        const workAreas = monitors.map(m => window.get_work_area_for_monitor(m.index));
+        const area = workAreas[currentIndex];
         const frame = window.get_frame_rect();
         if (frame.width <= 0 || frame.height <= 0 || area.width <= 0 || area.height <= 0)
             return;
@@ -316,16 +324,25 @@ export class WindowPlacement {
                 return;
             entry.unconfirmed = null;
         }
+        const record = {connector: current.connector, frame: entry.normal, maximized};
         if (maximized) {
             entry.maximizedFrame = frame;
+            // Mutter keeps the entire pre-maximize rectangle for unmaximize.
+            // A user can separately move and resize the free axis.
+            const horizontal = maximized === Meta.MaximizeFlags.HORIZONTAL &&
+                frame.x === area.x && frame.width === area.width;
+            const vertical = maximized === Meta.MaximizeFlags.VERTICAL &&
+                frame.y === area.y && frame.height === area.height;
+            if (horizontal || vertical)
+                record.partial = rememberFrame(frame, area, workAreas);
         } else if (!entry.maximizedFrame || !sameFrame(entry.maximizedFrame, frame)) {
             // Unmaximize changes the flags before the client supplies its normal
             // frame. A rapid remaximize or close must retain the earlier normal size.
-            entry.normal = rememberFrame(frame, area);
+            entry.normal = rememberFrame(frame, area, workAreas);
+            record.frame = entry.normal;
             entry.maximizedFrame = null;
         }
-        this.pending.set(entry.app, {entry, layout,
-            record: {connector: current.connector, frame: entry.normal, maximized}});
+        this.pending.set(entry.app, {entry, layout, record});
         // Coalesce an interactive drag and flush its last sample on close or relaunch.
         if (this.timer)
             GLib.Source.remove(this.timer);

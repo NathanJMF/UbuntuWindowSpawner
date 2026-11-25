@@ -119,12 +119,13 @@ async function checkPreferencesLauncher() {
 }
 
 async function checkClientMinimum(monitor) {
-    const window = await open('wayland', true);
-    await wait(() => paintedGeometry(window), 'client with a larger minimum size to become visible');
+    const {window, seen} = await observeOpening(() => byTitle(title), () => open('wayland', true));
     const rect = window.get_frame_rect();
-    check(window.get_monitor() === monitor && rect.width >= 920 && rect.height >= 420,
-        'Client with a new minimum size opens visibly on its remembered monitor');
     const area = window.get_work_area_for_monitor(monitor);
+    check(window.get_monitor() === monitor && rect.width >= 920 && rect.height >= 420 &&
+        rect.x + rect.width === area.x + area.width && rect.y + rect.height === area.y + area.height &&
+        seen.size === 1 && seen.has(paintedGeometry(window)),
+    'First visible frame keeps the bottom-right corner after the app raises its minimum size');
     const x = area.x + 88;
     const y = area.y + 55;
     window.move_frame(true, x, y);
@@ -236,6 +237,29 @@ async function checkAuthenticationDialog(extension, primary, other) {
     await wait(() => !Main.layoutManager.modalDialogGroup.get_children().includes(prompt), 'prompt cancellation');
 }
 
+async function checkPartialMaximization(window, area) {
+    const original = frame(window);
+    for (const flags of [Meta.MaximizeFlags.HORIZONTAL, Meta.MaximizeFlags.VERTICAL]) {
+        const horizontal = flags === Meta.MaximizeFlags.HORIZONTAL;
+        window.set_maximize_flags(flags);
+        await wait(() => horizontal ? window.get_frame_rect().width === area.width :
+            window.get_frame_rect().height === area.height, 'partial maximize');
+        const rect = window.get_frame_rect();
+        const edited = horizontal ? [rect.x, area.y + 75, rect.width, 400] :
+            [area.x + 70, rect.y, 770, rect.height];
+        window.move_resize_frame(true, ...edited);
+        await wait(() => frame(window) === edited.join(','), 'adjust free axis');
+        await delay(350);
+        window = await reopenAtSavedFrame(window);
+        check(window.get_maximize_flags() === flags && frame(window) === edited.join(','),
+            'Partial maximize retains the edited free axis');
+        window.unmaximize();
+        await wait(() => frame(window) === original, 'native unmaximize restores both original axes');
+        await delay(150);
+    }
+    return window;
+}
+
 async function checkSnapping(window, originalFrame) {
     const snap = activeExtension('keyboard-monitor-snap@local');
     activeExtension('tiling-assistant@ubuntu.com');
@@ -287,6 +311,7 @@ async function run() {
     window.unmaximize();
     await delay(800);
     check(frame(window) === stored, 'Unmaximizing restores the normal frame');
+    window = await checkPartialMaximization(window, area);
     await checkApplicationDialog(primary);
     if (companions)
         window = await checkSnapping(window, stored);
@@ -302,6 +327,15 @@ async function run() {
     check(window.get_monitor() === other && xFrame.endsWith(',580,340'), 'XWayland window moved and resized');
     window = await reopenAtSavedFrame(window, 'x11');
     check(frame(window) === xFrame, 'XWayland reopens at its saved position and size');
+    const small = window.get_frame_rect();
+    const neighbour = window.get_work_area_for_monitor(primary);
+    const seamX = area.x > neighbour.x ? area.x - 160 : area.x + area.width - small.width + 160;
+    window.move_frame(true, seamX, Math.max(area.y, neighbour.y) + 60);
+    await delay(350);
+    check(window.get_frame_rect().x === seamX, 'Window spans both displays');
+    window = await reopenAtSavedFrame(window, 'x11');
+    window.move_frame(true, area.x + area.width - small.width, area.y + area.height - small.height);
+    await delay(350);
     await close(window);
 
     // Both backends of this synthetic GTK app use the same application ID.

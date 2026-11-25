@@ -40,6 +40,8 @@ async function delayedClient(responds) {
         can_maximize: () => true,
         allows_move: () => true,
         allows_resize: () => true,
+        get_min_size: () => [false, 0, 0],
+        get_max_size: () => [false, 0, 0],
         is_fullscreen: () => false,
         get_user_time: () => 1,
         move_resize_frame(_user, x, y, width, height) {

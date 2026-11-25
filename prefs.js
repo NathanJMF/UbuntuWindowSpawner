@@ -170,7 +170,15 @@ export default class WindowSpawnerPreferences extends ExtensionPreferences {
             for (const row of rows)
                 apps.remove(row);
             rows = [];
-            const saved = new Set(listSavedApps());
+            let saved = new Set();
+            try {
+                saved = new Set(listSavedApps());
+            } catch {
+                rows.push(new Adw.ActionRow({
+                    title: 'Saved positions could not be read',
+                    subtitle: 'Check that your account can access the window placement folder.',
+                }));
+            }
             const excluded = new Set(settings.get_strv('excluded-apps'));
             const appsByName = [...new Set([...saved, ...excluded])]
                 .map(id => ({id, name: appName(id)}))
@@ -194,7 +202,12 @@ export default class WindowSpawnerPreferences extends ExtensionPreferences {
                     const forget = new Gtk.Button({label: 'Forget', valign: Gtk.Align.CENTER});
                     forget.update_property([Gtk.AccessibleProperty.LABEL], [`Forget saved position for ${name}`]);
                     forget.connect('clicked', () => {
-                        forgetSavedApp(id);
+                        try {
+                            forgetSavedApp(id);
+                        } catch {
+                            window.add_toast(new Adw.Toast({title: 'Could not forget the saved position'}));
+                            return;
+                        }
                         refresh();
                     });
                     row.add_suffix(forget);

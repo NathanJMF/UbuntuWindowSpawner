@@ -1,6 +1,6 @@
 import GLib from 'gi://GLib';
 
-import {fitFrame, sameFrame} from './geometry.js';
+import {fitFrame, sameFrame, spansDisplays, validFrame} from './geometry.js';
 
 // Monotonic timestamps are in microseconds. The polling source only runs
 // while a newly mapped window is negotiating its placement with Mutter.
@@ -14,11 +14,32 @@ const POLL_INTERVAL_MS = 12;
 // buffer. Finish each configure before issuing the next one. Throughout this
 // short launch transaction the actor stays mapped, so clients still get their
 // frames and Shell retains ownership of animation opacity.
-export function restoreAtMap(window, actor, record, index, done) {
+export function restoreAtMap(window, actor, record, index, done, workAreas = []) {
     const area = window.get_work_area_for_monitor(index);
     const initial = window.get_frame_rect();
     const initialFlags = window.get_maximize_flags();
     const finalFlags = window.can_maximize() ? record.maximized : 0;
+    const partial = (finalFlags === 1 || finalFlags === 2) && validFrame(record.partial)
+        ? record.partial : null;
+
+    function targetFrame(current, saved = record.frame) {
+        if (!window.allows_resize())
+            return fitFrame(saved, area, current, workAreas);
+        const requested = fitFrame(saved, area, null, workAreas);
+        const [hasMin, minWidth, minHeight] = window.get_min_size();
+        const [hasMax, maxWidth, maxHeight] = window.get_max_size();
+        if (!hasMin && !hasMax)
+            return requested;
+
+        // Mutter reports size hints for the client rectangle. Its difference
+        // from the frame includes native decorations or client-side shadows.
+        const client = window.frame_rect_to_client_rect(current);
+        const fitAxis = (size, inset, min, max) => Math.max(1, hasMin ? min + inset : 1,
+            Math.min(size, hasMax && max > 0 ? max + inset : Infinity));
+        const width = fitAxis(requested.width, current.width - client.width, minWidth, maxWidth);
+        const height = fitAxis(requested.height, current.height - client.height, minHeight, maxHeight);
+        return fitFrame(saved, area, {width, height}, workAreas);
+    }
 
     function bufferReady() {
         const surface = actor.get_first_child();
@@ -30,8 +51,7 @@ export function restoreAtMap(window, actor, record, index, done) {
     }
 
     if (!initialFlags && !finalFlags && window.get_monitor() === index && bufferReady() &&
-        (!record.frame || sameFrame(initial, fitFrame(record.frame, area,
-            window.allows_resize() ? null : initial))))
+        (!record.frame || sameFrame(initial, targetFrame(initial))))
         return null;
 
     const started = GLib.get_monotonic_time();
@@ -45,6 +65,7 @@ export function restoreAtMap(window, actor, record, index, done) {
     let source = 0;
     let stableFrom = 0;
     let lastFrame = null;
+    let placingPartial = false;
 
     function cancel() {
         if (source) {
@@ -62,13 +83,27 @@ export function restoreAtMap(window, actor, record, index, done) {
         beforeResize = window.get_frame_rect();
         if (window.get_monitor() !== index)
             window.move_to_monitor(index);
-        if (record.frame && window.allows_move()) {
+        const saved = placingPartial ? partial : record.frame;
+        if (saved && window.allows_move()) {
             const resizable = window.allows_resize();
-            target = fitFrame(record.frame, area, resizable ? null : window.get_frame_rect());
+            const current = window.get_frame_rect();
+            target = targetFrame(current, saved);
+            if (placingPartial && finalFlags === 1) {
+                target.x = current.x;
+                target.width = current.width;
+            } else if (placingPartial) {
+                target.y = current.y;
+                target.height = current.height;
+            }
+            if (placingPartial && sameFrame(current, target))
+                return;
+            // Mutter confines ordinary X11 placement requests to one monitor.
+            // A saved cross-display frame repeats the user's explicit move.
+            const userMove = spansDisplays(target, area, workAreas);
             if (resizable)
-                window.move_resize_frame(false, target.x, target.y, target.width, target.height);
+                window.move_resize_frame(userMove, target.x, target.y, target.width, target.height);
             else
-                window.move_frame(false, target.x, target.y);
+                window.move_frame(userMove, target.x, target.y);
         }
     }
 
@@ -113,6 +148,15 @@ export function restoreAtMap(window, actor, record, index, done) {
             }
             if (!bufferReady())
                 return false;
+            // Character-cell increments and aspect constraints can yield a
+            // different usable size. Keep its saved alignment before reveal.
+            if (target && (frame.width !== target.width || frame.height !== target.height)) {
+                target = fitFrame(placingPartial ? partial : record.frame, area, frame, workAreas);
+                if (target.x !== frame.x || target.y !== frame.y) {
+                    window.move_frame(spansDisplays(target, area, workAreas), target.x, target.y);
+                    return false;
+                }
+            }
             phase = 'final';
             if (finalFlags && window.get_maximize_flags() !== finalFlags)
                 window.set_maximize_flags(finalFlags);
@@ -120,7 +164,16 @@ export function restoreAtMap(window, actor, record, index, done) {
         }
         // Keep a complete allocation cycle between a confirmed client frame
         // and reveal. Frame geometry alone can precede the actor's allocation.
-        return finalFrame() && bufferReady() && now - stableFrom >= ALLOCATION_STABLE_US;
+        if (!finalFrame() || !bufferReady() || now - stableFrom < ALLOCATION_STABLE_US)
+            return false;
+        if (partial && !placingPartial) {
+            // Apply the free-axis edit only after Mutter has taken its own
+            // snapshot of the original normal frame for native unmaximize.
+            placingPartial = true;
+            applyFrame();
+            return false;
+        }
+        return true;
     }
 
     actor.set_opacity_override(0);

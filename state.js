@@ -11,16 +11,24 @@ function appFile(appId) {
 }
 
 function readFile(file) {
+    let etag = null;
     try {
-        const [, bytes, etag] = file.load_contents(null);
+        const [, bytes, revision] = file.load_contents(null);
+        etag = revision;
         const data = JSON.parse(new TextDecoder().decode(bytes));
-        if (data?.version === 1)
+        if (data?.version === 1) {
+            // Keep a malformed field from blocking subsequent writes to this app.
+            if (typeof data.layouts !== 'object' || Array.isArray(data.layouts))
+                delete data.layouts;
+            if (typeof data.generation !== 'string')
+                delete data.generation;
             return {data, etag};
+        }
     } catch (error) {
         if (!error.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.NOT_FOUND))
             console.warn('Window Spawner could not read a saved placement.');
     }
-    return {data: {}, etag: null};
+    return {data: {}, etag};
 }
 
 export function savedAppState(appId) {

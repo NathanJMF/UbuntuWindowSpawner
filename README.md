@@ -39,7 +39,9 @@ Dialog placement works independently of window memory. Changes apply as you make
 - A new window opens on its remembered display, even when you launch it from another one. The extension places it as it opens so you can start using it at its saved size. An already-open window keeps its current placement.
 - The most recently active main window supplies the next placement for that app. Opening a dialog leaves the main window's saved position intact.
 - Maximized windows reopen maximized. When a normal size was previously recorded, unmaximizing returns the window to it.
+- If you maximize just the height or width, the other dimension can still be moved or resized. Reopening restores that adjustment, and unmaximizing returns to the earlier normal rectangle.
 - Display positions use the usable area reported by GNOME, including space reserved for panels. Connecting and disconnecting displays gives each combination of display connectors its own saved placements.
+- A window left across two displays can reopen across the seam when the full window fits on the connected displays. If you disconnect one, its placement fits the remaining work area.
 - On a new display combination, the extension uses the last known placement as a starting point. If the original display is missing, the window opens on the primary display. App-enforced minimum sizes still apply.
 - **Forget** clears an app's positions across display layouts. Its currently open windows stop contributing to that record. Opening a new window starts learning again.
 

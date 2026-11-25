@@ -91,8 +91,17 @@ try {
     userTime++; // Keyboard-driven window placement.
     placement._capture(entry);
     assert(placement.pending.has(app), 'Post-change input was treated as automatic movement');
+
+    placement._flush();
+    entry.cancelRestore = () => {};
+    global.display.emit('grab-op-begin', window);
+    global.display.emit('grab-op-end', window);
+    assert(!placement.pending.has(app), 'Canceling a grab saved the unfinished launch frame');
+    window.get_frame_rect = () => ({x: 30, y: 25, width: 370, height: 270});
+    placement._capture(entry, true);
+    assert(placement.pending.get(app)?.record.frame.width === 370, 'User resize after handoff was lost');
 } finally {
     placement.disable();
 }
 assert(manager.handlers.size === 0, 'Monitor listener survived disable');
-print('Monitor-change placement timing passed.');
+print('Monitor-change timing and canceled-grab placement checks passed.');

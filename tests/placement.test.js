@@ -22,6 +22,15 @@ equal(fitFrame(right, {x: 0, y: 0, width: 600, height: 500}, {width: 640, height
     {x: 0, y: 100, width: 640, height: 400});
 
 const docked = [{connector: 'DP-1', index: 1}, {connector: 'eDP-1', index: 0}];
+const leftArea = {x: -1000, y: 0, width: 1000, height: 700};
+const rightArea = {x: 0, y: 0, width: 900, height: 700};
+// A fully visible frame may be larger than either monitor.
+const spanning = {x: -180, y: 20, width: 1050, height: 400};
+const across = rememberFrame(spanning, rightArea, [leftArea, rightArea]);
+equal(fitFrame(across, rightArea, null, [leftArea, rightArea]), spanning);
+equal(fitFrame(across, rightArea, null, [rightArea]), {x: 0, y: 20, width: 900, height: 400});
+const gap = {...leftArea, x: -1040};
+equal(fitFrame(across, rightArea, null, [gap, rightArea]), {x: 0, y: 20, width: 900, height: 400});
 const dockKey = layoutId(docked);
 const soloKey = layoutId([docked[1]]);
 equal(dockKey, layoutId(docked.toReversed()));
@@ -75,4 +84,17 @@ if (ARGV[0] !== '--state-test') {
     writePlacement(id, soloKey, internal, generation); // A newly opened window.
     writePlacement(id, soloKey, external); // An older window remains open.
     equal(readPlacement(id, soloKey), internal);
+
+    // A syntactically valid but malformed v1 record must not permanently stop recording.
+    const stateDir = Gio.File.new_for_path(GLib.get_user_state_dir()).get_child('ubuntu-window-spawner');
+    const digest = GLib.compute_checksum_for_string(GLib.ChecksumType.SHA256, id, -1);
+    const file = stateDir.get_child(`${digest}.json`);
+    for (const malformed of [{layouts: []}, {layouts: 'broken'}, {generation: {invalid: true}}]) {
+        file.replace_contents(JSON.stringify({version: 1, appId: id, ...malformed}), null, false,
+            Gio.FileCreateFlags.PRIVATE, null);
+        const recovered = savedAppState(id);
+        equal(placementForLayout(recovered, soloKey), null);
+        writePlacement(id, soloKey, internal, recovered.generation);
+        equal(readPlacement(id, soloKey), internal);
+    }
 }
